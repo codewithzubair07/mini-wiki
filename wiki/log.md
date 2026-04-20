@@ -32,3 +32,25 @@ _Tip: `grep "^## \[" wiki/log.md | tail -5` shows the last 5 entries._
 - Orphan pages: 0
 - Empty pages: 0
 - Duplicate candidates: 0
+
+## [2026-04-20] ingest | Zettelkasten: The Note-Taking Method Behind Compounding Knowledge
+- Source file: raw/sources/test-note.md
+- Pages created: wiki/sources/test-note.md, wiki/entities/niklas-luhmann.md, wiki/concepts/zettelkasten.md
+- Pages updated: wiki/index.md, wiki/log.md, wiki/entities/vannevar-bush.md, wiki/concepts/llm-wiki.md
+- Entities: Niklas Luhmann, Vannevar Bush
+- Concepts: Zettelkasten, LLM Wiki
+- Notes: Full ingest of test-note.md; stub promoted to complete, well-linked knowledge entry per schema/AGENTS.md
+
+## [2026-04-20] lint | Wiki health check
+- Pages checked: 8
+- Broken links: 1
+- Orphan pages: 0
+- Empty pages: 0
+- Duplicate candidates: 0
+
+## [2026-04-20] lint | Wiki health check
+- Pages checked: 8
+- Broken links: 0
+- Orphan pages: 0
+- Empty pages: 0
+- Duplicate candidates: 0

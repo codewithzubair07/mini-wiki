@@ -4,7 +4,7 @@ type: entity
 tags: [person, inventor, memex]
 created: 2026-04-20
 updated: 2026-04-20
-sources: [llm-wiki-pattern]
+sources: [llm-wiki-pattern, test-note]
 ---
 
 # Vannevar Bush
@@ -21,6 +21,8 @@ Vannevar Bush (1890–1974) was an American engineer, inventor, and science admi
 ## Connections
 - Related to [[LLM Wiki]] (the LLM Wiki pattern is spiritually descended from the Memex)
 - Related to [[Retrieval-Augmented Generation]] (contrasting philosophy)
+- Related to [[Zettelkasten]] (Luhmann's Zettelkasten is the closest pre-digital realisation of Bush's associative trails vision)
+- Related to [[Niklas Luhmann]] (parallel visionary of linked personal knowledge)
 
 ## Contradictions / Open Questions
 _None yet._
