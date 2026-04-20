@@ -1,0 +1,25 @@
+# mini-wiki configuration
+
+# LLM provider: "openai" or "anthropic"
+# API keys are read from environment variables:
+#   OPENAI_API_KEY or ANTHROPIC_API_KEY
+llm:
+  provider: openai
+  model: gpt-4o
+
+# Wiki settings
+wiki:
+  dir: wiki
+  raw_sources_dir: raw/sources
+  raw_assets_dir: raw/assets
+  index_file: wiki/index.md
+  log_file: wiki/log.md
+
+# Search settings
+search:
+  max_results: 10
+
+# Ingest settings
+ingest:
+  # Maximum file size to ingest (in bytes)
+  max_source_size_bytes: 1048576  # 1 MB
