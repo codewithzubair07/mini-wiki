@@ -4,7 +4,7 @@ type: concept
 tags: [knowledge-management, llm, wiki, second-brain]
 created: 2026-04-20
 updated: 2026-04-20
-sources: [llm-wiki-pattern]
+sources: [llm-wiki-pattern, test-note]
 ---
 
 # LLM Wiki
@@ -20,6 +20,8 @@ Knowledge **accumulates** rather than being rediscovered on every query. Cross-r
 - A single source ingest may update 10–15 wiki pages (source: [[llm-wiki-pattern]])
 - Answers to good questions can be promoted into synthesis pages, compounding the knowledge base (source: [[llm-wiki-pattern]])
 - The schema file (AGENTS.md / CLAUDE.md) is the key configuration that makes an LLM a disciplined wiki maintainer rather than a generic chatbot (source: [[llm-wiki-pattern]])
+- The LLM Wiki extends the [[Zettelkasten]] philosophy: the LLM acts as an automated note-taker, maintaining the slip box continuously (source: [[test-note]])
+- The "one wiki page per entity/concept" rule maps to Zettelkasten's atomic-note principle; wikilinks implement its linking discipline (source: [[test-note]])
 
 ## Contradictions / Open Questions
 - At what scale does reading `index.md` first break down compared to embedding-based search?
@@ -34,3 +36,4 @@ Knowledge **accumulates** rather than being rediscovered on every query. Cross-r
 
 ## Sources
 - [[llm-wiki-pattern]]
+- [[test-note]]
