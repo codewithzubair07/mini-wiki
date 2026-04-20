@@ -43,3 +43,6 @@ Thumbs.db
 .pytest_cache/
 htmlcov/
 .coverage
+
+# RAG vector store (generated at runtime by tools/ingest.py)
+vectorstore/

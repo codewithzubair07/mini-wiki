@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
 """
-ingest.py — Ingest a source file into the wiki.
+ingest.py — Ingest wiki markdown files into a FAISS vector store.
 
-Usage:
-    python tools/ingest.py <path-to-source-file> [--dry-run]
+The script now has two modes:
 
-What it does:
-    1. Validates the source file exists and is in raw/sources/
-    2. Creates a source summary page in wiki/sources/ (stub, for LLM to fill)
-    3. Appends an ingest entry to wiki/log.md
-    4. Prints a prompt you can paste into your LLM agent to complete the ingest
+1. **Classic wiki-stub mode** (original behaviour, preserved):
+       python tools/ingest.py <path-to-source-file> [--dry-run]
+   Creates a stub wiki page, updates log.md and index.md, and prints an LLM
+   prompt to fill the stub in.
+
+2. **Embedding pipeline mode** (new — builds the RAG vector store):
+       python tools/ingest.py --embed
+   Reads every *.md file under wiki/, chunks the text, generates embeddings
+   with sentence-transformers, and saves a FAISS index to vectorstore/.
 
 For full LLM-assisted ingest, open this repo in Claude/Codex and ask it to
 run the ingest workflow described in schema/AGENTS.md.
 """
 
 import argparse
+import json
 import re
 import sys
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WIKI_DIR = REPO_ROOT / "wiki"
@@ -27,6 +32,10 @@ RAW_SOURCES = REPO_ROOT / "raw" / "sources"
 LOG_FILE = WIKI_DIR / "log.md"
 INDEX_FILE = WIKI_DIR / "index.md"
 
+
+# ---------------------------------------------------------------------------
+# Helpers shared by both modes
+# ---------------------------------------------------------------------------
 
 def slugify(text: str) -> str:
     """Convert a string to a filesystem-safe slug."""
@@ -43,6 +52,10 @@ def title_from_path(path: Path) -> str:
     title = stem.replace("-", " ").replace("_", " ").title()
     return title
 
+
+# ---------------------------------------------------------------------------
+# Classic wiki-stub helpers (original ingest.py logic, unchanged)
+# ---------------------------------------------------------------------------
 
 def create_source_page(source_path: Path, dry_run: bool = False) -> Path:
     """Create a stub source summary page in wiki/sources/."""
@@ -193,13 +206,179 @@ fully ingest the source at {relative}:
     )
 
 
+# ---------------------------------------------------------------------------
+# Embedding pipeline helpers
+# ---------------------------------------------------------------------------
+
+def _load_settings() -> dict[str, Any]:
+    """Load config/settings.yml without pulling in the full core package."""
+    import yaml  # available after pip install PyYAML
+
+    settings_path = REPO_ROOT / "config" / "settings.yml"
+    with settings_path.open("r", encoding="utf-8") as fh:
+        return yaml.safe_load(fh)
+
+
+def _strip_frontmatter(text: str) -> str:
+    """Remove YAML frontmatter block from markdown text."""
+    return re.sub(r"^---.*?---\s*", "", text, flags=re.DOTALL).strip()
+
+
+def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 50) -> list[str]:
+    """Split *text* into overlapping chunks of approximately *chunk_size* words.
+
+    Uses a simple word-count heuristic (1 token ≈ 0.75 words for English
+    prose) to stay within the 300–500 token target range without requiring a
+    tokeniser as a dependency.
+
+    Parameters
+    ----------
+    text : str
+        Plain text to chunk (frontmatter already stripped).
+    chunk_size : int
+        Target chunk size measured in words (roughly 300–500 tokens for
+        English prose, given ~0.75 words per token).
+    overlap : int
+        Number of words to overlap between consecutive chunks.
+
+    Returns
+    -------
+    list[str]
+        Non-empty text chunks.
+    """
+    words = text.split()
+    if not words:
+        return []
+
+    chunks: list[str] = []
+    start = 0
+    while start < len(words):
+        end = min(start + chunk_size, len(words))
+        chunk = " ".join(words[start:end]).strip()
+        if chunk:
+            chunks.append(chunk)
+        if end == len(words):
+            break
+        start += chunk_size - overlap
+
+    return chunks
+
+
+def run_embedding_pipeline() -> None:
+    """Read all wiki markdown files, embed them, and save a FAISS index.
+
+    The resulting files are written to the ``vectorstore/`` directory:
+    - ``vectorstore/index.faiss`` — FAISS flat inner-product index.
+    - ``vectorstore/metadata.json`` — per-chunk metadata (source, text).
+    """
+    try:
+        import faiss
+        import numpy as np
+        from sentence_transformers import SentenceTransformer
+    except ImportError as exc:
+        print(
+            f"Error: missing dependency ({exc}). "
+            "Run: pip install faiss-cpu sentence-transformers",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    settings = _load_settings()
+    embedding_model_name: str = settings["embedding"]["model"]
+    chunk_size: int = int(settings["ingest"]["chunk_size"])
+    chunk_overlap: int = int(settings["ingest"]["chunk_overlap"])
+    vs_dir: Path = REPO_ROOT / settings["retrieval"]["vectorstore_dir"]
+
+    print(f"Loading embedding model: {embedding_model_name}")
+    model = SentenceTransformer(embedding_model_name)
+
+    # Collect all markdown files under wiki/
+    md_files = sorted(WIKI_DIR.rglob("*.md"))
+    if not md_files:
+        print("No markdown files found in wiki/. Nothing to ingest.")
+        return
+
+    print(f"Found {len(md_files)} markdown file(s) under wiki/")
+
+    all_chunks: list[str] = []
+    all_meta: list[dict[str, Any]] = []
+
+    for md_file in md_files:
+        raw = md_file.read_text(encoding="utf-8")
+        text = _strip_frontmatter(raw)
+        chunks = _chunk_text(text, chunk_size=chunk_size, overlap=chunk_overlap)
+
+        source_name = md_file.relative_to(REPO_ROOT).as_posix()
+        for chunk in chunks:
+            all_chunks.append(chunk)
+            all_meta.append({"source": source_name, "text": chunk})
+
+        print(f"  {source_name}: {len(chunks)} chunk(s)")
+
+    if not all_chunks:
+        print("No text chunks produced. Check that wiki/ files contain content.")
+        return
+
+    print(f"\nGenerating embeddings for {len(all_chunks)} chunk(s)…")
+    embeddings: np.ndarray = model.encode(
+        all_chunks,
+        show_progress_bar=True,
+        normalize_embeddings=True,
+        batch_size=64,
+    )
+
+    # Build a flat inner-product index (cosine similarity after normalisation)
+    dim: int = embeddings.shape[1]
+    index = faiss.IndexFlatIP(dim)
+    index.add(embeddings.astype("float32"))
+
+    # Persist to disk
+    vs_dir.mkdir(parents=True, exist_ok=True)
+    faiss.write_index(index, str(vs_dir / "index.faiss"))
+    with (vs_dir / "metadata.json").open("w", encoding="utf-8") as fh:
+        json.dump(all_meta, fh, ensure_ascii=False, indent=2)
+
+    print(
+        f"\nVector store saved to {vs_dir.relative_to(REPO_ROOT)}/\n"
+        f"  index.faiss  — {index.ntotal} vectors (dim={dim})\n"
+        f"  metadata.json — {len(all_meta)} entries"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Ingest a source file into the wiki.")
-    parser.add_argument("source", help="Path to the source file to ingest")
+    parser = argparse.ArgumentParser(
+        description="Ingest a source file into the wiki, or build the RAG vector store."
+    )
     parser.add_argument(
-        "--dry-run", action="store_true", help="Show what would happen without writing files"
+        "source",
+        nargs="?",
+        help="Path to the source file to ingest (classic stub mode)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would happen without writing files (classic mode only)",
+    )
+    parser.add_argument(
+        "--embed",
+        action="store_true",
+        help="Build/rebuild the FAISS embedding index from wiki/ markdown files",
     )
     args = parser.parse_args()
+
+    # --- Embedding pipeline mode ---
+    if args.embed:
+        run_embedding_pipeline()
+        return 0
+
+    # --- Classic wiki-stub mode ---
+    if not args.source:
+        parser.print_help()
+        return 1
 
     source_path = Path(args.source).resolve()
 
@@ -237,3 +416,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

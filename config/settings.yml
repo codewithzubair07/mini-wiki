@@ -1,11 +1,16 @@
 # mini-wiki configuration
 
-# LLM provider: "openai" or "anthropic"
-# API keys are read from environment variables:
-#   OPENAI_API_KEY or ANTHROPIC_API_KEY
+# LLM provider: "openai" or "ollama"
+# For OpenAI: set OPENAI_API_KEY environment variable
+# For Ollama: run `ollama serve` locally (default base_url: http://localhost:11434)
 llm:
-  provider: openai
-  model: gpt-4o
+  provider: openai          # "openai" | "ollama"
+  model: gpt-4o             # OpenAI model name, or Ollama model (e.g. "llama3")
+  ollama_base_url: http://localhost:11434
+
+# Embedding settings
+embedding:
+  model: all-MiniLM-L6-v2  # sentence-transformers model for local embeddings
 
 # Wiki settings
 wiki:
@@ -19,7 +24,13 @@ wiki:
 search:
   max_results: 10
 
-# Ingest settings
+# Ingest / RAG settings
 ingest:
-  # Maximum file size to ingest (in bytes)
   max_source_size_bytes: 1048576  # 1 MB
+  chunk_size: 400           # target tokens per chunk (300-500 range)
+  chunk_overlap: 50         # token overlap between consecutive chunks
+
+# Retrieval settings
+retrieval:
+  top_k: 5                  # number of chunks to retrieve per query
+  vectorstore_dir: vectorstore  # directory where FAISS index is stored
