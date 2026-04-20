@@ -28,6 +28,8 @@ Knowledge **accumulates** rather than being rediscovered on every query. Cross-r
 ## Related Pages
 - [[Retrieval-Augmented Generation]]
 - [[Vannevar Bush]]
+- [[Zettelkasten]]
+- [[Niklas Luhmann]]
 - [[LLM Wiki vs RAG: A Comparison]] (synthesis)
 
 ## Sources
