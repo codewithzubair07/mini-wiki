@@ -54,3 +54,14 @@ _Tip: `grep "^## \[" wiki/log.md | tail -5` shows the last 5 entries._
 - Orphan pages: 0
 - Empty pages: 0
 - Duplicate candidates: 0
+
+## [2026-04-20] update | Complete test-note ingest — backlink and source fixes
+- Pages updated: wiki/entities/vannevar-bush.md, wiki/concepts/llm-wiki.md
+- Notes: Added [[test-note]] to Sources section of vannevar-bush.md (frontmatter already listed it); added test-note to sources frontmatter and Sources section of llm-wiki.md; added Zettelkasten-connection key claims to llm-wiki.md from test-note content
+
+## [2026-04-20] lint | Wiki health check
+- Pages checked: 8
+- Broken links: 0
+- Orphan pages: 0
+- Empty pages: 0
+- Duplicate candidates: 0
