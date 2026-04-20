@@ -65,3 +65,10 @@ _Tip: `grep "^## \[" wiki/log.md | tail -5` shows the last 5 entries._
 - Orphan pages: 0
 - Empty pages: 0
 - Duplicate candidates: 0
+
+## [2026-04-20] lint | Wiki health check
+- Pages checked: 8
+- Broken links: 0
+- Orphan pages: 0
+- Empty pages: 0
+- Duplicate candidates: 0
