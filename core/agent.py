@@ -31,6 +31,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -388,20 +389,31 @@ def _extract_summary(content: str, max_length: int = 100) -> str:
     Skips YAML frontmatter (lines between ``---`` delimiters), headings, and
     blank lines so the summary captures actual prose rather than metadata.
     """
-    in_frontmatter = False
     lines = content.splitlines()
+    # Detect whether the document starts with a YAML frontmatter block
+    in_frontmatter = len(lines) > 0 and lines[0].strip() == "---"
+    frontmatter_closed = False
+
     for i, raw in enumerate(lines):
         stripped = raw.strip()
-        # Toggle frontmatter block on the opening/closing ``---``
-        if stripped == "---":
-            in_frontmatter = i == 0 or in_frontmatter
-            in_frontmatter = not in_frontmatter if i != 0 else True
+        if i == 0 and stripped == "---":
+            # Opening --- of frontmatter
             continue
-        if in_frontmatter:
+        if in_frontmatter and not frontmatter_closed:
+            if stripped == "---":
+                frontmatter_closed = True
             continue
+        # Body: skip headings and blank lines
         if stripped and not stripped.startswith("#"):
             return stripped[:max_length]
     return ""
+
+
+def _format_sources_list(sources: list[str]) -> str:
+    """Return a markdown bullet list of wiki links for *sources*."""
+    if sources:
+        return "\n".join(f"- [[{Path(s).stem}]]" for s in sources)
+    return "- (none)"
 
 
 def _update_index_for_synthesis(location: str, content: str) -> None:
@@ -419,17 +431,23 @@ def _update_index_for_synthesis(location: str, content: str) -> None:
 
     try:
         text = index_file.read_text(encoding="utf-8")
-        # Insert after the Syntheses table header row if present
         if "## Syntheses" in text:
-            # Find the header separator line and append after the last row in the table
             lines = text.splitlines(keepends=True)
             insert_at = None
             in_syntheses = False
             for i, line in enumerate(lines):
-                if line.strip() == "## Syntheses":
+                stripped = line.strip()
+                # Enter Syntheses section
+                if stripped == "## Syntheses":
                     in_syntheses = True
-                if in_syntheses and line.startswith("|") and not line.startswith("| Page"):
-                    insert_at = i + 1  # keep moving to last table row
+                    continue
+                if in_syntheses:
+                    # Stop at the next heading or a blank line after the table
+                    if stripped.startswith("##") or stripped.startswith("---"):
+                        break
+                    if stripped.startswith("|"):
+                        # Update insertion point to just after this table row
+                        insert_at = i + 1
             if insert_at is not None:
                 lines.insert(insert_at, new_row)
                 index_file.write_text("".join(lines), encoding="utf-8")
@@ -614,11 +632,11 @@ def run(query: str, history: list[dict[str, str]] | None = None) -> dict[str, An
             sources = result.get("sources", [])
             if answer_text and not _is_no_answer(answer_text):
                 slug = _slug_from_content(answer_text)
-                # Use microsecond precision to avoid filename collisions
-                timestamp_suffix = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-                page_filename = f"{slug}-{timestamp_suffix}.md"
+                # Use UUID suffix to guarantee unique filenames
+                unique_suffix = uuid.uuid4().hex[:8]
+                page_filename = f"{slug}-{unique_suffix}.md"
                 title = query[:_MAX_TITLE_LENGTH]
-                sources_str = "\n".join(f"- [[{Path(s).stem}]]" for s in sources) if sources else "- (none)"
+                sources_str = _format_sources_list(sources)
                 page_content = (
                     f"---\ntitle: \"{title}\"\ntype: synthesis\n"
                     f"created: {datetime.now().strftime('%Y-%m-%d')}\n"
