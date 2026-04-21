@@ -40,6 +40,37 @@ from core import memory
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+
+# Minimum number of words required for a query to be attempted rather than
+# triggering the ask_clarification action.  Queries with fewer words and no
+# recognised intent are almost always too vague to retrieve useful results.
+_MIN_QUERY_WORDS = 3
+
+# Maximum characters kept from the user query when used as a page title or
+# YAML frontmatter value, to stay within a readable heading width.
+_MAX_TITLE_LENGTH = 80
+
+# Maximum characters in a generated slug (used as part of a filename).
+# Keeps filenames short and compatible with all filesystems.
+_MAX_SLUG_LENGTH = 60
+
+# Phrases that signal the LLM could not answer from context.  When the answer
+# matches any of these prefixes the agent will not save a synthesis page
+# (there is nothing worthwhile to persist).
+_NO_ANSWER_PREFIXES = (
+    "i don't know",
+    "i do not know",
+    "i'm not sure",
+    "i am not sure",
+    "i don't have",
+    "i do not have",
+    "not enough information",
+    "insufficient context",
+)
+
+# ---------------------------------------------------------------------------
 # Intent classification
 # ---------------------------------------------------------------------------
 
@@ -339,10 +370,38 @@ def _slug_from_content(content: str) -> str:
         if line.startswith("#"):
             heading = line.lstrip("#").strip()
             slug = re.sub(r"[^a-z0-9]+", "-", heading.lower()).strip("-")
-            return slug[:60] or "synthesis"
+            return slug[:_MAX_SLUG_LENGTH] or "synthesis"
     # Fallback: use the first non-empty line
     first = next((l.strip() for l in content.splitlines() if l.strip()), "synthesis")
-    return re.sub(r"[^a-z0-9]+", "-", first.lower()).strip("-")[:60] or "synthesis"
+    return re.sub(r"[^a-z0-9]+", "-", first.lower()).strip("-")[:_MAX_SLUG_LENGTH] or "synthesis"
+
+
+def _is_no_answer(text: str) -> bool:
+    """Return True when the LLM reply indicates it could not answer."""
+    normalised = text.strip().lower()
+    return any(normalised.startswith(prefix) for prefix in _NO_ANSWER_PREFIXES)
+
+
+def _extract_summary(content: str, max_length: int = 100) -> str:
+    """Extract the first meaningful body line from markdown *content*.
+
+    Skips YAML frontmatter (lines between ``---`` delimiters), headings, and
+    blank lines so the summary captures actual prose rather than metadata.
+    """
+    in_frontmatter = False
+    lines = content.splitlines()
+    for i, raw in enumerate(lines):
+        stripped = raw.strip()
+        # Toggle frontmatter block on the opening/closing ``---``
+        if stripped == "---":
+            in_frontmatter = i == 0 or in_frontmatter
+            in_frontmatter = not in_frontmatter if i != 0 else True
+            continue
+        if in_frontmatter:
+            continue
+        if stripped and not stripped.startswith("#"):
+            return stripped[:max_length]
+    return ""
 
 
 def _update_index_for_synthesis(location: str, content: str) -> None:
@@ -351,13 +410,8 @@ def _update_index_for_synthesis(location: str, content: str) -> None:
     if not index_file.exists():
         return
 
-    # Extract a one-line summary: first non-heading, non-empty line
-    summary = ""
-    for line in content.splitlines():
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and not stripped.startswith("---"):
-            summary = stripped[:100]
-            break
+    # Extract a one-line summary, skipping frontmatter and headings
+    summary = _extract_summary(content)
 
     # Derive [[slug]] from filename
     stem = Path(location).stem
@@ -489,7 +543,7 @@ def run(query: str, history: list[dict[str, str]] | None = None) -> dict[str, An
 
     # Short or ambiguous queries → ask for clarification instead of guessing
     words = [w for w in query.strip().split() if w]
-    if len(words) < 3 and intent == "unknown":
+    if len(words) < _MIN_QUERY_WORDS and intent == "unknown":
         actions_taken.append("ask_clarification")
         result: dict[str, Any] = {
             "answer": (
@@ -558,16 +612,18 @@ def run(query: str, history: list[dict[str, str]] | None = None) -> dict[str, An
             # Action: update_wiki
             answer_text = result["answer"]
             sources = result.get("sources", [])
-            if answer_text and answer_text.strip().lower() != "i don't know":
+            if answer_text and not _is_no_answer(answer_text):
                 slug = _slug_from_content(answer_text)
-                timestamp_suffix = datetime.now().strftime("%Y%m%d-%H%M%S")
+                # Use microsecond precision to avoid filename collisions
+                timestamp_suffix = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
                 page_filename = f"{slug}-{timestamp_suffix}.md"
+                title = query[:_MAX_TITLE_LENGTH]
                 sources_str = "\n".join(f"- [[{Path(s).stem}]]" for s in sources) if sources else "- (none)"
                 page_content = (
-                    f"---\ntitle: \"{query[:80]}\"\ntype: synthesis\n"
+                    f"---\ntitle: \"{title}\"\ntype: synthesis\n"
                     f"created: {datetime.now().strftime('%Y-%m-%d')}\n"
                     f"sources: [{', '.join(Path(s).stem for s in sources)}]\n---\n\n"
-                    f"# {query[:80]}\n\n"
+                    f"# {title}\n\n"
                     f"## Synthesis\n\n{answer_text}\n\n"
                     f"## Sources\n{sources_str}\n"
                 )

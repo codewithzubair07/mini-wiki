@@ -107,3 +107,11 @@ _Tip: `grep "^## \[" wiki/log.md | tail -5` shows the last 5 entries._
 ## [2026-04-21 11:49:05] query | intent=meta
 - Query: what is the system status
 - Sources: none
+
+## [2026-04-21 11:52:08] query | intent=unknown
+- Query: hi
+- Sources: none
+
+## [2026-04-21 11:52:08] query | intent=meta
+- Query: what is the system status
+- Sources: none
