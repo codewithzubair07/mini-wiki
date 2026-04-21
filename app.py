@@ -56,6 +56,7 @@ class AskResponse(BaseModel):
 
     answer: str
     intent: str
+    actions_taken: list[str]
     sources: list[str]
     confidence: str
     context: list[str]
@@ -167,6 +168,7 @@ def ask(request: AskRequest) -> AskResponse:
     return AskResponse(
         answer=result["answer"],
         intent=result["intent"],
+        actions_taken=result.get("actions_taken", []),
         sources=result["sources"],
         confidence=result["confidence"],
         context=result["context"],

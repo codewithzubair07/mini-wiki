@@ -8,6 +8,8 @@ This module is the central controller that:
 3. **Scores confidence** — based on retrieval similarity scores.
 4. **Logs interactions** — appends a summary entry to ``wiki/log.md``.
 5. **Manages memory** — persists the exchange into the short-term store.
+6. **Self-improves** — writes new synthesis pages to ``wiki/syntheses/`` and
+   updates ``wiki/index.md`` when a synthesis produces meaningful new content.
 
 Public API::
 
@@ -17,6 +19,7 @@ Public API::
     # {
     #   "answer": "...",
     #   "intent": "search",
+    #   "actions_taken": ["retrieve"],
     #   "sources": [...],
     #   "confidence": "high",
     #   "context": [...],
@@ -25,6 +28,7 @@ Public API::
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from datetime import datetime
@@ -257,6 +261,147 @@ def lint_pipeline() -> dict[str, Any]:
     }
 
 
+def write_wiki_page(content: str, location: str) -> dict[str, Any]:
+    """Write (or append to) a synthesis page in ``wiki/syntheses/``.
+
+    Safety rules
+    ------------
+    - If the target file already exists, new content is *appended* under a
+      versioned heading rather than overwriting the file.
+    - The ``wiki/index.md`` Syntheses table is updated with a new row when the
+      file is first created.
+    - An entry is appended to ``wiki/log.md``.
+
+    Parameters
+    ----------
+    content : str
+        Markdown text to write to the page.
+    location : str
+        Filename (or relative path under ``wiki/``) for the new page.
+        If it does not start with ``wiki/``, ``wiki/syntheses/`` is prepended.
+        The ``.md`` extension is added automatically if absent.
+
+    Returns
+    -------
+    dict
+        Keys: ``answer``, ``sources``, ``context``, ``confidence``.
+    """
+    # Resolve target path safely inside the repo
+    if not location.endswith(".md"):
+        location = location + ".md"
+    if not location.startswith("wiki/"):
+        location = "wiki/syntheses/" + location.lstrip("/")
+
+    target = REPO_ROOT / location
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    is_new = not target.exists()
+
+    try:
+        if is_new:
+            target.write_text(content, encoding="utf-8")
+        else:
+            # Append-only: add a versioned section so existing content is preserved
+            versioned_section = (
+                f"\n\n---\n\n## Update — {timestamp}\n\n{content}"
+            )
+            with target.open("a", encoding="utf-8") as fh:
+                fh.write(versioned_section)
+    except OSError as exc:
+        return {
+            "answer": f"Failed to write wiki page: {exc}",
+            "sources": [],
+            "context": [],
+            "confidence": "low",
+        }
+
+    # Update wiki/index.md Syntheses table when creating a new page
+    if is_new:
+        _update_index_for_synthesis(location, content)
+
+    # Log to wiki/log.md
+    action = "created" if is_new else "appended"
+    _log_wiki_update(location, action, timestamp)
+
+    return {
+        "answer": f"Synthesis page {action}: {location}",
+        "sources": [location],
+        "context": [content[:300]],
+        "confidence": "high",
+    }
+
+
+def _slug_from_content(content: str) -> str:
+    """Derive a short slug from the first heading or first line of *content*."""
+    for line in content.splitlines():
+        line = line.strip()
+        if line.startswith("#"):
+            heading = line.lstrip("#").strip()
+            slug = re.sub(r"[^a-z0-9]+", "-", heading.lower()).strip("-")
+            return slug[:60] or "synthesis"
+    # Fallback: use the first non-empty line
+    first = next((l.strip() for l in content.splitlines() if l.strip()), "synthesis")
+    return re.sub(r"[^a-z0-9]+", "-", first.lower()).strip("-")[:60] or "synthesis"
+
+
+def _update_index_for_synthesis(location: str, content: str) -> None:
+    """Append a row to the Syntheses table in ``wiki/index.md``."""
+    index_file = REPO_ROOT / "wiki" / "index.md"
+    if not index_file.exists():
+        return
+
+    # Extract a one-line summary: first non-heading, non-empty line
+    summary = ""
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and not stripped.startswith("---"):
+            summary = stripped[:100]
+            break
+
+    # Derive [[slug]] from filename
+    stem = Path(location).stem
+    new_row = f"| [[{stem}]] | {summary} |\n"
+
+    try:
+        text = index_file.read_text(encoding="utf-8")
+        # Insert after the Syntheses table header row if present
+        if "## Syntheses" in text:
+            # Find the header separator line and append after the last row in the table
+            lines = text.splitlines(keepends=True)
+            insert_at = None
+            in_syntheses = False
+            for i, line in enumerate(lines):
+                if line.strip() == "## Syntheses":
+                    in_syntheses = True
+                if in_syntheses and line.startswith("|") and not line.startswith("| Page"):
+                    insert_at = i + 1  # keep moving to last table row
+            if insert_at is not None:
+                lines.insert(insert_at, new_row)
+                index_file.write_text("".join(lines), encoding="utf-8")
+        else:
+            # Append a new Syntheses section
+            with index_file.open("a", encoding="utf-8") as fh:
+                fh.write(f"\n## Syntheses\n| Page | Summary |\n|------|--------|\n{new_row}")
+    except OSError:
+        pass  # Non-fatal
+
+
+def _log_wiki_update(location: str, action: str, timestamp: str) -> None:
+    """Append a wiki-update entry to ``wiki/log.md``."""
+    log_file = REPO_ROOT / "wiki" / "log.md"
+    entry = (
+        f"\n## [{timestamp}] update_wiki | {action} synthesis page\n"
+        f"- File: {location}\n"
+        f"- Action: {action}\n"
+    )
+    try:
+        with log_file.open("a", encoding="utf-8") as fh:
+            fh.write(entry)
+    except OSError:
+        pass  # Non-fatal
+
+
 # ---------------------------------------------------------------------------
 # Interaction logging
 # ---------------------------------------------------------------------------
@@ -295,15 +440,23 @@ def _log_interaction(query: str, intent: str, sources: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def run(query: str, history: list[dict[str, str]] | None = None) -> dict[str, Any]:
-    """Run the agent for *query*.
+    """Run the agent for *query* using a multi-step reasoning loop.
 
     Steps
     -----
-    1. Classify intent.
-    2. Select and execute the appropriate tool.
-    3. Log the interaction to ``wiki/log.md``.
-    4. Store the exchange in short-term memory.
-    5. Return a structured response dict.
+    1. **Understand query** — classify intent and decide the initial action.
+    2. **Decide action** — map intent to one of the supported actions:
+       ``retrieve``, ``synthesize``, ``ingest``, ``answer_direct``,
+       ``ask_clarification``.
+    3. **Execute tool** — call the appropriate internal tool.
+    4. **Evaluate result** — check confidence and determine if a follow-up
+       action is warranted (e.g., writing a synthesis wiki page).
+    5. **Self-improve** — if the result is a synthesis with sufficient
+       confidence, automatically write the insight to ``wiki/syntheses/``
+       (``update_wiki`` action) and update ``wiki/index.md`` / ``wiki/log.md``.
+
+    The internal Thought → Action → Input → Observation trace is not exposed
+    to the caller; only the final structured response is returned.
 
     Parameters
     ----------
@@ -316,18 +469,63 @@ def run(query: str, history: list[dict[str, str]] | None = None) -> dict[str, An
     Returns
     -------
     dict
-        Keys: ``answer`` (str), ``intent`` (str), ``sources`` (list[str]),
+        Keys: ``answer`` (str), ``intent`` (str),
+        ``actions_taken`` (list[str]), ``sources`` (list[str]),
         ``confidence`` (str), ``context`` (list[str]).
     """
     if history is None:
         history = memory.get_history()
 
+    actions_taken: list[str] = []
+
+    # ------------------------------------------------------------------
+    # Step 1 — Understand query / classify intent
+    # ------------------------------------------------------------------
     intent = classify_intent(query)
 
-    # --- Route to the right tool ---
+    # ------------------------------------------------------------------
+    # Step 2 — Decide action based on intent
+    # ------------------------------------------------------------------
+
+    # Short or ambiguous queries → ask for clarification instead of guessing
+    words = [w for w in query.strip().split() if w]
+    if len(words) < 3 and intent == "unknown":
+        actions_taken.append("ask_clarification")
+        result: dict[str, Any] = {
+            "answer": (
+                "Could you provide more detail? Your query seems incomplete. "
+                "Try asking a full question, for example: "
+                "'What is retrieval-augmented generation?'"
+            ),
+            "sources": [],
+            "context": [],
+            "confidence": "low",
+        }
+        _log_interaction(query, intent, [])
+        memory.add_interaction(user=query, assistant=result["answer"])
+        return {
+            "answer": result["answer"],
+            "intent": intent,
+            "actions_taken": actions_taken,
+            "sources": [],
+            "confidence": "low",
+            "context": [],
+        }
+
+    # ------------------------------------------------------------------
+    # Step 3 — Execute tool
+    # ------------------------------------------------------------------
+
     if intent == "update":
+        # Thought: user wants to rebuild the vector store
+        # Action: ingest
+        actions_taken.append("ingest")
         result = ingest_pipeline()
+
     elif intent == "meta":
+        # Thought: user is asking about the system itself
+        # Action: answer_direct (no retrieval needed)
+        actions_taken.append("answer_direct")
         result = {
             "answer": (
                 "mini-wiki AI Assistant — local-first RAG backend. "
@@ -340,22 +538,62 @@ def run(query: str, history: list[dict[str, str]] | None = None) -> dict[str, An
             "context": [],
             "confidence": "high",
         }
-    else:
-        # search, synthesize, unknown — all route through the RAG pipeline
+
+    elif intent == "synthesize":
+        # Thought: user wants a deep comparison or multi-concept synthesis
+        # Action: retrieve first, then synthesize
+        actions_taken.append("retrieve")
         result = rag_pipeline(query, history=history)
 
+        # ------------------------------------------------------------------
+        # Step 4 — Evaluate result
+        # ------------------------------------------------------------------
+        # Observation: if retrieval was successful, mark as synthesize action
+        if result.get("confidence") in ("high", "medium") and result.get("answer"):
+            actions_taken.append("synthesize")
+
+            # ------------------------------------------------------------------
+            # Step 5 — Self-improvement: write synthesis page to wiki/syntheses/
+            # ------------------------------------------------------------------
+            # Action: update_wiki
+            answer_text = result["answer"]
+            sources = result.get("sources", [])
+            if answer_text and answer_text.strip().lower() != "i don't know":
+                slug = _slug_from_content(answer_text)
+                timestamp_suffix = datetime.now().strftime("%Y%m%d-%H%M%S")
+                page_filename = f"{slug}-{timestamp_suffix}.md"
+                sources_str = "\n".join(f"- [[{Path(s).stem}]]" for s in sources) if sources else "- (none)"
+                page_content = (
+                    f"---\ntitle: \"{query[:80]}\"\ntype: synthesis\n"
+                    f"created: {datetime.now().strftime('%Y-%m-%d')}\n"
+                    f"sources: [{', '.join(Path(s).stem for s in sources)}]\n---\n\n"
+                    f"# {query[:80]}\n\n"
+                    f"## Synthesis\n\n{answer_text}\n\n"
+                    f"## Sources\n{sources_str}\n"
+                )
+                write_wiki_page(page_content, page_filename)
+                actions_taken.append("update_wiki")
+
+    else:
+        # search or unknown — route through the RAG pipeline
+        # Thought: user wants to find information
+        # Action: retrieve
+        actions_taken.append("retrieve")
+        result = rag_pipeline(query, history=history)
+
+    # ------------------------------------------------------------------
+    # Log interaction and persist memory
+    # ------------------------------------------------------------------
     answer = result.get("answer", "")
     sources = result.get("sources", [])
 
-    # Log to wiki/log.md
     _log_interaction(query, intent, sources)
-
-    # Persist to short-term memory
     memory.add_interaction(user=query, assistant=answer)
 
     return {
         "answer": answer,
         "intent": intent,
+        "actions_taken": actions_taken,
         "sources": sources,
         "confidence": result.get("confidence", "low"),
         "context": result.get("context", []),

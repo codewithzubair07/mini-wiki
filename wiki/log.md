@@ -91,3 +91,19 @@ _Tip: `grep "^## \[" wiki/log.md | tail -5` shows the last 5 entries._
 ## [2026-04-21 11:05:49] query | intent=meta
 - Query: what is the system status
 - Sources: none
+
+## [2026-04-21 11:48:49] update_wiki | created synthesis page
+- File: wiki/syntheses/test-synthesis-unit.md
+- Action: created
+
+## [2026-04-21 11:48:49] update_wiki | appended synthesis page
+- File: wiki/syntheses/test-synthesis-unit.md
+- Action: appended
+
+## [2026-04-21 11:49:05] query | intent=unknown
+- Query: hi
+- Sources: none
+
+## [2026-04-21 11:49:05] query | intent=meta
+- Query: what is the system status
+- Sources: none
