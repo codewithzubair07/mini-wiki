@@ -33,9 +33,9 @@ from pydantic import BaseModel
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="mini-wiki RAG API",
-    description="Local-first AI assistant backed by your personal wiki.",
-    version="1.0.0",
+    title="mini-wiki AI Assistant",
+    description="Local-first AI assistant backed by your personal wiki — with agent-based intent routing.",
+    version="2.0.0",
 )
 
 REPO_ROOT = Path(__file__).resolve().parent
@@ -55,7 +55,9 @@ class AskResponse(BaseModel):
     """Structured JSON response from POST /ask."""
 
     answer: str
+    intent: str
     sources: list[str]
+    confidence: str
     context: list[str]
 
 
@@ -132,24 +134,28 @@ def ingest() -> IngestResponse:
 
 @app.post("/ask", response_model=AskResponse, summary="Ask a question")
 def ask(request: AskRequest) -> AskResponse:
-    """Accept a natural-language query and return a grounded answer.
+    """Accept a natural-language query and return a grounded, agent-routed answer.
 
-    The pipeline:
-    1. Converts *query* to an embedding using the configured
-       ``sentence-transformers`` model.
-    2. Retrieves the top-k most similar wiki chunks from the FAISS index.
-    3. Passes the retrieved context to the LLM to generate a grounded answer.
+    The agent:
 
-    Returns a JSON object with the answer, source file names, and raw context
-    chunks used to produce the answer.
+    1. Classifies the intent (``search``, ``synthesize``, ``update``, ``meta``,
+       or ``unknown``).
+    2. Selects the appropriate tool (RAG pipeline, ingest pipeline, or meta
+       response).
+    3. Generates a grounded answer using the retrieved context and the last
+       five conversation turns from short-term memory.
+    4. Logs the interaction to ``wiki/log.md``.
+
+    Returns a JSON object with the answer, classified intent, source file
+    names, confidence tier, and raw context chunks.
     """
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="query must not be empty.")
 
     try:
-        from core.pipeline import ask as rag_ask
+        from core.agent import run as agent_run
 
-        result = rag_ask(request.query)
+        result = agent_run(request.query)
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=503,
@@ -160,6 +166,8 @@ def ask(request: AskRequest) -> AskResponse:
 
     return AskResponse(
         answer=result["answer"],
+        intent=result["intent"],
         sources=result["sources"],
+        confidence=result["confidence"],
         context=result["context"],
     )

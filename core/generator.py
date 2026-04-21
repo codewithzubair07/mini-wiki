@@ -29,7 +29,7 @@ _SYSTEM_PROMPT = (
 )
 
 _USER_TEMPLATE = """\
-Context:
+{history}Context:
 {context}
 
 Question: {question}
@@ -41,8 +41,12 @@ Instructions:
 """
 
 
-def build_prompt(question: str, chunks: list[str]) -> str:
-    """Combine retrieved *chunks* and *question* into a grounded prompt.
+def build_prompt(
+    question: str,
+    chunks: list[str],
+    history: list[dict[str, str]] | None = None,
+) -> str:
+    """Combine retrieved *chunks*, optional *history*, and *question* into a grounded prompt.
 
     Parameters
     ----------
@@ -50,6 +54,10 @@ def build_prompt(question: str, chunks: list[str]) -> str:
         The user's natural-language query.
     chunks : list[str]
         Retrieved text chunks from the wiki.
+    history : list[dict[str, str]] | None
+        Prior conversation turns (``[{"user": ..., "assistant": ...}, ...]``).
+        When provided, the history is prepended to the prompt so the LLM can
+        take prior context into account.
 
     Returns
     -------
@@ -57,7 +65,16 @@ def build_prompt(question: str, chunks: list[str]) -> str:
         Formatted user message for the LLM.
     """
     context = "\n\n---\n\n".join(chunks)
-    return _USER_TEMPLATE.format(context=context, question=question)
+
+    history_text = ""
+    if history:
+        lines = ["Previous conversation:"]
+        for turn in history:
+            lines.append(f"User: {turn['user']}")
+            lines.append(f"Assistant: {turn['assistant']}")
+        history_text = "\n".join(lines) + "\n\n"
+
+    return _USER_TEMPLATE.format(history=history_text, context=context, question=question)
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +138,11 @@ def _call_ollama(prompt: str) -> str:
 # Public interface
 # ---------------------------------------------------------------------------
 
-def generate(question: str, chunks: list[str]) -> str:
+def generate(
+    question: str,
+    chunks: list[str],
+    history: list[dict[str, str]] | None = None,
+) -> str:
     """Generate a grounded answer for *question* given *chunks* as context.
 
     Selects the LLM back-end from ``config/settings.yml`` (``llm.provider``).
@@ -132,6 +153,9 @@ def generate(question: str, chunks: list[str]) -> str:
         The user's natural-language query.
     chunks : list[str]
         Retrieved text chunks from the wiki (used as context).
+    history : list[dict[str, str]] | None
+        Optional prior conversation turns to include in the prompt
+        (``[{"user": ..., "assistant": ...}, ...]``).
 
     Returns
     -------
@@ -141,7 +165,7 @@ def generate(question: str, chunks: list[str]) -> str:
     settings = get_settings()
     provider: str = settings["llm"]["provider"].lower()
 
-    prompt = build_prompt(question, chunks)
+    prompt = build_prompt(question, chunks, history=history)
 
     if provider == "openai":
         return _call_openai(prompt)
