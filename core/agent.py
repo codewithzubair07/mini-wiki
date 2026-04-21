@@ -209,11 +209,14 @@ def rag_pipeline(query: str, history: list[dict[str, str]] | None = None) -> dic
 
     answer = generator.generate(query, chunks, history=history)
 
+    from core.pipeline import extract_contradiction_warnings
+
     return {
         "answer": answer,
         "sources": sources,
         "context": chunks,
         "confidence": confidence,
+        "contradictions": extract_contradiction_warnings(chunks),
     }
 
 
@@ -676,4 +679,5 @@ def run(query: str, history: list[dict[str, str]] | None = None) -> dict[str, An
         "sources": sources,
         "confidence": result.get("confidence", "low"),
         "context": result.get("context", []),
+        "contradictions": result.get("contradictions", []),
     }

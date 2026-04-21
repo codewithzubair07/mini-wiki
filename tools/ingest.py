@@ -22,7 +22,7 @@ import argparse
 import json
 import re
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,7 @@ WIKI_DIR = REPO_ROOT / "wiki"
 RAW_SOURCES = REPO_ROOT / "raw" / "sources"
 LOG_FILE = WIKI_DIR / "log.md"
 INDEX_FILE = WIKI_DIR / "index.md"
+CONTRADICTIONS_FILE = WIKI_DIR / "contradictions.md"
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +98,26 @@ _TODO: Add any caveats, context, or quality notes._
     dest = WIKI_DIR / "sources" / f"{slug}.md"
 
     if dest.exists():
-        print(f"  Source page already exists: {dest.relative_to(REPO_ROOT)}")
+        if dry_run:
+            print(f"  [dry-run] Would update: {dest.relative_to(REPO_ROOT)}")
+            return dest
+        # Snapshot old content, write new content, then detect contradictions.
+        contradictions = update_wiki_page(
+            page_path=dest,
+            new_content=content,
+            new_source=str(
+                source_path.relative_to(REPO_ROOT)
+                if source_path.is_relative_to(REPO_ROOT)
+                else source_path.name
+            ),
+            dry_run=False,
+        )
+        print(f"  Updated: {dest.relative_to(REPO_ROOT)}")
+        if contradictions:
+            print(
+                f"  ⚠️  {len(contradictions)} contradiction(s) detected — "
+                "see wiki/contradictions.md"
+            )
         return dest
 
     if not dry_run:
@@ -204,6 +224,391 @@ fully ingest the source at {relative}:
 6. Update wiki/log.md with a complete ingest entry.
 """
     )
+
+
+# ---------------------------------------------------------------------------
+# Contradiction detection helpers
+# ---------------------------------------------------------------------------
+
+# Prompt components for the fact-checker LLM call.
+_CONTRADICTION_SYSTEM = "You are a fact-checker."
+
+_CONTRADICTION_USER_TEMPLATE = """\
+You are a fact-checker. Here are two versions of a wiki page:
+
+OLD VERSION:
+{old_content}
+
+NEW VERSION:
+{new_content}
+
+Do these two versions contradict each other on any specific factual claims? If yes, list each contradiction in this exact format:
+CLAIM A: [exact claim from old version]
+CLAIM B: [exact claim from new version]
+CONTRADICTION: [one sentence explaining why these conflict]
+
+If no contradictions exist, respond with: NO_CONTRADICTIONS"""
+
+
+def _call_llm(system_prompt: str, user_message: str) -> str:
+    """Call the configured LLM provider with a custom system and user message.
+
+    Uses the same ``llm.provider`` and ``llm.model`` settings as the rest of
+    the application (read from ``config/settings.yml``).  Supports both the
+    ``openai`` and ``ollama`` back-ends.
+
+    Parameters
+    ----------
+    system_prompt : str
+        System-level instruction for the LLM.
+    user_message : str
+        User-turn message content.
+
+    Returns
+    -------
+    str
+        Raw text response from the LLM.
+    """
+    settings = _load_settings()
+    provider: str = settings["llm"]["provider"].lower()
+    model: str = settings["llm"]["model"]
+
+    if provider == "openai":
+        import os
+
+        import openai  # already required by requirements.txt
+
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            raise EnvironmentError(
+                "OPENAI_API_KEY environment variable is not set. "
+                "Export it before running the ingest pipeline."
+            )
+        client = openai.OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=0.2,
+        )
+        return response.choices[0].message.content.strip()
+
+    elif provider == "ollama":
+        import httpx  # already required by requirements.txt
+
+        base_url: str = settings["llm"].get("ollama_base_url", "http://localhost:11434")
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ]
+        with httpx.Client(timeout=120.0) as client:
+            resp = client.post(
+                f"{base_url}/api/chat",
+                json={"model": model, "messages": messages, "stream": False},
+            )
+            resp.raise_for_status()
+        return resp.json()["message"]["content"].strip()
+
+    else:
+        raise ValueError(
+            f"Unknown LLM provider: {provider!r}. "
+            "Set llm.provider to 'openai' or 'ollama' in config/settings.yml."
+        )
+
+
+def _parse_contradiction_response(response: str) -> list[dict[str, str]]:
+    """Parse the LLM contradiction-detection response into structured records.
+
+    Expects the LLM to use the ``CLAIM A / CLAIM B / CONTRADICTION`` format
+    or to respond with ``NO_CONTRADICTIONS``.
+
+    Parameters
+    ----------
+    response : str
+        Raw text returned by the LLM.
+
+    Returns
+    -------
+    list[dict[str, str]]
+        List of dicts with keys ``claim_a``, ``claim_b``, and ``description``.
+        Returns an empty list when no contradictions are found.
+    """
+    if "NO_CONTRADICTIONS" in response.upper():
+        return []
+
+    contradictions: list[dict[str, str]] = []
+    # Each contradiction block starts with "CLAIM A:"
+    blocks = re.split(r"(?=CLAIM A:)", response, flags=re.IGNORECASE)
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        claim_a_match = re.search(
+            r"CLAIM A:\s*(.+?)(?=CLAIM B:|$)", block, re.IGNORECASE | re.DOTALL
+        )
+        claim_b_match = re.search(
+            r"CLAIM B:\s*(.+?)(?=CONTRADICTION:|$)", block, re.IGNORECASE | re.DOTALL
+        )
+        contradiction_match = re.search(
+            r"CONTRADICTION:\s*(.+?)(?=CLAIM A:|$)", block, re.IGNORECASE | re.DOTALL
+        )
+        if claim_a_match and claim_b_match:
+            contradictions.append(
+                {
+                    "claim_a": claim_a_match.group(1).strip(),
+                    "claim_b": claim_b_match.group(1).strip(),
+                    "description": (
+                        contradiction_match.group(1).strip()
+                        if contradiction_match
+                        else "Contradicting claims detected."
+                    ),
+                }
+            )
+    return contradictions
+
+
+def _prepend_contradiction_warning(
+    page_path: Path,
+    claim_a: str,
+    claim_b: str,
+    old_source: str,
+    new_source: str,
+    timestamp: str,
+) -> None:
+    """Prepend a ⚠️ CONTRADICTION DETECTED block to the top of *page_path*.
+
+    Parameters
+    ----------
+    page_path : Path
+        Absolute path to the wiki markdown file to update.
+    claim_a : str
+        The contradicting claim from the old version.
+    claim_b : str
+        The contradicting claim from the new version.
+    old_source : str
+        Source file name or identifier for the old content.
+    new_source : str
+        Source file name or identifier for the new content.
+    timestamp : str
+        Timestamp string for the detection event.
+    """
+    warning_block = (
+        f"---\n"
+        f"⚠️ CONTRADICTION DETECTED\n"
+        f"Claim A: {claim_a}\n"
+        f"Claim B: {claim_b}\n"
+        f"Sources: {old_source} vs {new_source}\n"
+        f"Detected: {timestamp}\n"
+        f"---\n\n"
+    )
+    existing = page_path.read_text(encoding="utf-8")
+    page_path.write_text(warning_block + existing, encoding="utf-8")
+
+
+def _append_contradiction_log_entry(
+    page_name: str, description: str, timestamp: str
+) -> None:
+    """Append a CONTRADICTION entry to ``wiki/log.md``.
+
+    Parameters
+    ----------
+    page_name : str
+        Relative path or human-readable name of the affected wiki page.
+    description : str
+        Brief one-sentence description of the contradiction.
+    timestamp : str
+        Timestamp string for the detection event.
+    """
+    entry = f"\n{timestamp} CONTRADICTION: {page_name} — {description}\n"
+    with LOG_FILE.open("a", encoding="utf-8") as fh:
+        fh.write(entry)
+
+
+def _append_to_contradictions_file(
+    timestamp: str,
+    page_name: str,
+    claim_a: str,
+    claim_b: str,
+    source_a: str,
+    source_b: str,
+) -> None:
+    """Append a contradiction record to ``wiki/contradictions.md``.
+
+    Creates ``wiki/contradictions.md`` with a header if it does not yet exist.
+
+    Parameters
+    ----------
+    timestamp : str
+        Timestamp string for the detection event.
+    page_name : str
+        Relative path or human-readable name of the affected wiki page.
+    claim_a : str
+        The contradicting claim from the old version.
+    claim_b : str
+        The contradicting claim from the new version.
+    source_a : str
+        Source file name or identifier for the old content.
+    source_b : str
+        Source file name or identifier for the new content.
+    """
+    CONTRADICTIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if not CONTRADICTIONS_FILE.exists():
+        CONTRADICTIONS_FILE.write_text(
+            "# Contradiction Log\n\n"
+            "This file is auto-generated by the ingestion pipeline.\n",
+            encoding="utf-8",
+        )
+    entry = (
+        f"\n## {timestamp} — {page_name}\n"
+        f"Claim A: {claim_a}\n"
+        f"Claim B: {claim_b}\n"
+        f"Sources: {source_a} vs {source_b}\n"
+        f"---\n"
+    )
+    with CONTRADICTIONS_FILE.open("a", encoding="utf-8") as fh:
+        fh.write(entry)
+
+
+def detect_and_record_contradictions(
+    page_path: Path,
+    old_content: str,
+    new_content: str,
+    old_source: str,
+    new_source: str,
+) -> list[dict[str, str]]:
+    """Compare two versions of a wiki page for contradictions and record findings.
+
+    Makes an LLM call to compare *old_content* against *new_content*.  When
+    contradictions are detected the function:
+
+    * Prepends a ``⚠️ CONTRADICTION DETECTED`` block to *page_path*.
+    * Appends a ``CONTRADICTION`` entry to ``wiki/log.md``.
+    * Appends an entry to ``wiki/contradictions.md`` (creating the file if
+      it does not exist).
+
+    Parameters
+    ----------
+    page_path : Path
+        Absolute path to the wiki markdown file that was just updated.
+    old_content : str
+        Full text of the page before the update.
+    new_content : str
+        Full text of the page after the update.
+    old_source : str
+        Source file name or identifier that produced the old content.
+    new_source : str
+        Source file name or identifier that produced the new content.
+
+    Returns
+    -------
+    list[dict[str, str]]
+        List of detected contradictions (empty when none are found).  Each
+        entry has keys ``claim_a``, ``claim_b``, and ``description``.
+    """
+    user_message = _CONTRADICTION_USER_TEMPLATE.format(
+        old_content=old_content,
+        new_content=new_content,
+    )
+    response = _call_llm(_CONTRADICTION_SYSTEM, user_message)
+    contradictions = _parse_contradiction_response(response)
+
+    if not contradictions:
+        return []
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        page_name = page_path.relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        page_name = page_path.name
+
+    # Use the first contradiction for the prominent page-level warning block
+    first = contradictions[0]
+    _prepend_contradiction_warning(
+        page_path,
+        claim_a=first["claim_a"],
+        claim_b=first["claim_b"],
+        old_source=old_source,
+        new_source=new_source,
+        timestamp=timestamp,
+    )
+    _append_contradiction_log_entry(page_name, first["description"], timestamp)
+    for contradiction in contradictions:
+        _append_to_contradictions_file(
+            timestamp=timestamp,
+            page_name=page_name,
+            claim_a=contradiction["claim_a"],
+            claim_b=contradiction["claim_b"],
+            source_a=old_source,
+            source_b=new_source,
+        )
+
+    return contradictions
+
+
+def update_wiki_page(
+    page_path: Path,
+    new_content: str,
+    new_source: str,
+    dry_run: bool = False,
+) -> list[dict[str, str]]:
+    """Write *new_content* to *page_path*, checking for contradictions first.
+
+    If the file already exists its current text is snapshotted before the
+    write.  After writing, ``detect_and_record_contradictions`` is called to
+    compare the two versions.
+
+    Parameters
+    ----------
+    page_path : Path
+        Absolute path to the wiki markdown file to create or overwrite.
+    new_content : str
+        Full markdown text to write to the file.
+    new_source : str
+        Human-readable identifier of the source driving this update (used in
+        contradiction reports).
+    dry_run : bool
+        When ``True`` the file is not written and no LLM call is made.
+
+    Returns
+    -------
+    list[dict[str, str]]
+        Detected contradictions (empty list when the file is new or when none
+        are found).
+    """
+    old_content: str | None = None
+    old_source: str = page_path.name
+
+    if page_path.exists():
+        old_content = page_path.read_text(encoding="utf-8")
+        try:
+            old_source = page_path.relative_to(REPO_ROOT).as_posix()
+        except ValueError:
+            old_source = page_path.name
+
+    if dry_run:
+        return []
+
+    page_path.parent.mkdir(parents=True, exist_ok=True)
+    page_path.write_text(new_content, encoding="utf-8")
+
+    if old_content is not None:
+        try:
+            return detect_and_record_contradictions(
+                page_path=page_path,
+                old_content=old_content,
+                new_content=new_content,
+                old_source=old_source,
+                new_source=new_source,
+            )
+        except Exception as exc:
+            print(
+                f"  Warning: contradiction detection failed: {exc}",
+                file=sys.stderr,
+            )
+
+    return []
 
 
 # ---------------------------------------------------------------------------

@@ -60,6 +60,7 @@ class AskResponse(BaseModel):
     sources: list[str]
     confidence: str
     context: list[str]
+    contradictions: list[str] = []
 
 
 class IngestResponse(BaseModel):
@@ -172,4 +173,5 @@ def ask(request: AskRequest) -> AskResponse:
         sources=result["sources"],
         confidence=result["confidence"],
         context=result["context"],
+        contradictions=result.get("contradictions", []),
     )
