@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from core import memory
+from core.pipeline import extract_contradiction_warnings
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -208,8 +209,6 @@ def rag_pipeline(query: str, history: list[dict[str, str]] | None = None) -> dic
     confidence = _score_confidence(hits)
 
     answer = generator.generate(query, chunks, history=history)
-
-    from core.pipeline import extract_contradiction_warnings
 
     return {
         "answer": answer,

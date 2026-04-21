@@ -54,10 +54,6 @@ def extract_contradiction_warnings(chunks: list[str]) -> list[str]:
     return warnings
 
 
-# Keep the private name as a backwards-compatible alias.
-_extract_contradiction_warnings = extract_contradiction_warnings
-
-
 def ask(query: str) -> dict[str, Any]:
     """Run the full RAG pipeline for *query*.
 
