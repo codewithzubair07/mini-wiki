@@ -442,8 +442,10 @@ def _update_index_for_synthesis(location: str, content: str) -> None:
                     in_syntheses = True
                     continue
                 if in_syntheses:
-                    # Stop at the next heading or a blank line after the table
-                    if stripped.startswith("##") or stripped.startswith("---"):
+                    # Stop only at the next heading so horizontal rules (---)
+                    # and blank lines inside the table section are not confused
+                    # with section boundaries.
+                    if stripped.startswith("#"):
                         break
                     if stripped.startswith("|"):
                         # Update insertion point to just after this table row
@@ -559,7 +561,10 @@ def run(query: str, history: list[dict[str, str]] | None = None) -> dict[str, An
     # Step 2 — Decide action based on intent
     # ------------------------------------------------------------------
 
-    # Short or ambiguous queries → ask for clarification instead of guessing
+    # Short or ambiguous queries → ask for clarification instead of guessing.
+    # Note: this guard only applies when intent is "unknown".  Short queries
+    # that contain a recognised keyword (e.g. "help", "status", "rebuild") are
+    # intentional and are routed normally by the branch logic below.
     words = [w for w in query.strip().split() if w]
     if len(words) < _MIN_QUERY_WORDS and intent == "unknown":
         actions_taken.append("ask_clarification")
