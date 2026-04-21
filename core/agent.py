@@ -171,7 +171,7 @@ def rag_pipeline(query: str, history: list[dict[str, str]] | None = None) -> dic
     sources: list[str] = list(dict.fromkeys(h["source"] for h in hits))
     confidence = _score_confidence(hits)
 
-    answer = generator.generate(query, chunks, history=history or [])
+    answer = generator.generate(query, chunks, history=history)
 
     return {
         "answer": answer,

@@ -35,7 +35,7 @@ def add_interaction(user: str, assistant: str) -> None:
     with _lock:
         _history.append({"user": user, "assistant": assistant})
         if len(_history) > _MAX_HISTORY:
-            _history = _history[-_MAX_HISTORY:]
+            _history[:] = _history[-_MAX_HISTORY:]
 
 
 def get_history() -> list[dict[str, str]]:
