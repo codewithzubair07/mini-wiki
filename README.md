@@ -20,6 +20,12 @@ Instead of searching raw documents every time you ask a question (RAG), this pro
 
 ```
 mini-wiki/
+├── app.py                # FastAPI server (RAG backend)
+├── core/
+│   ├── _settings.py      # Load config/settings.yml (cached)
+│   ├── retriever.py      # FAISS semantic retriever
+│   ├── generator.py      # LLM answer generator (OpenAI / Ollama)
+│   └── pipeline.py       # End-to-end RAG pipeline
 ├── raw/
 │   ├── sources/          # Immutable source documents (articles, notes, transcripts)
 │   └── assets/           # Images, PDFs, attachments
@@ -33,7 +39,7 @@ mini-wiki/
 ├── schema/
 │   └── AGENTS.md         # LLM operating instructions
 ├── tools/
-│   ├── ingest.py         # Ingest a source into the wiki
+│   ├── ingest.py         # Ingest a source into the wiki (also builds RAG index)
 │   ├── query.py          # Search and query wiki pages
 │   └── lint.py           # Check for orphans, stale links, duplicates
 ├── config/
@@ -100,6 +106,88 @@ Reports:
 - Broken `[[wiki links]]`
 - Duplicate pages (similar titles)
 - Empty pages
+
+---
+
+## FastAPI + RAG Backend
+
+Mini-wiki includes a local-first AI assistant API built with FastAPI and semantic search over your wiki.
+
+### Start the server
+
+```bash
+uvicorn app:app --reload --host 0.0.0.0 --port 8000
+```
+
+The interactive API docs are available at <http://localhost:8000/docs>.
+
+### API Endpoints
+
+| Method | Path       | Description                                      |
+|--------|------------|--------------------------------------------------|
+| GET    | `/health`  | Service status and vector store readiness        |
+| POST   | `/ingest`  | Build (or rebuild) the FAISS vector store        |
+| POST   | `/ask`     | Ask a question; returns grounded answer + sources |
+
+### Typical workflow
+
+**Step 1 — build the vector store** (required before first `/ask`):
+
+```bash
+curl -X POST http://localhost:8000/ingest
+```
+
+Or via the `/ingest` endpoint in the Swagger UI.
+
+**Step 2 — ask a question**:
+
+```bash
+curl -X POST http://localhost:8000/ask \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What is retrieval augmented generation?"}'
+```
+
+Example response:
+
+```json
+{
+  "answer": "Retrieval Augmented Generation (RAG) is a technique that ...",
+  "sources": ["wiki/concepts/retrieval-augmented-generation.md"],
+  "context": ["RAG combines a retriever that searches a knowledge base ..."]
+}
+```
+
+**Step 3 — check service health**:
+
+```bash
+curl http://localhost:8000/health
+```
+
+### LLM configuration
+
+Edit `config/settings.yml` to switch between providers:
+
+```yaml
+llm:
+  provider: openai      # "openai" | "ollama"
+  model: gpt-4o         # OpenAI model, or Ollama model name (e.g. "llama3")
+  ollama_base_url: http://localhost:11434
+```
+
+- **OpenAI**: set the `OPENAI_API_KEY` environment variable.
+- **Ollama**: run `ollama serve` locally; no API key required.
+
+### Rebuild the index after wiki changes
+
+Whenever you add or update wiki pages, rebuild the index:
+
+```bash
+# Via CLI
+python tools/ingest.py --embed
+
+# Via API
+curl -X POST http://localhost:8000/ingest
+```
 
 ---
 
@@ -170,8 +258,7 @@ Inspired by Vannevar Bush's *Memex* (1945) — a personal, curated knowledge sto
 
 ## Extending
 
-- Add **semantic search** using `sentence-transformers` or `openai` embeddings
-- Add a **web UI** with Flask or FastAPI
 - Set up an **MCP server** to expose tools to your agent
 - Add **automatic contradiction detection** with LLM calls
 - Add **Dataview frontmatter** for dynamic Obsidian tables
+- Add a **web frontend** to interact with the `/ask` API from a browser
