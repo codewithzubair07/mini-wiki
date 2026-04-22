@@ -1,18 +1,32 @@
-# mini-wiki — Personal Second Brain / LLM Wiki
+# mini-wiki — AI-Powered Local-First Markdown Wiki
 
-A **local-first, markdown-based knowledge base** where an LLM incrementally builds and maintains a persistent wiki from your raw sources.
+An **AI-powered, local-first knowledge base** with a FastAPI backend and agentic intelligence. mini-wiki lets you build and query a structured, self-maintaining wiki — augmented by RAG retrieval, an autonomous agent layer, automatic contradiction detection, live web research via PinchTab, and a clean single-page dashboard UI.
 
 ---
 
 ## Core Idea
 
-Instead of searching raw documents every time you ask a question (RAG), this project has an LLM **compile and maintain a structured wiki** as new sources arrive. Knowledge accumulates. Contradictions are flagged. Syntheses are reusable.
+Instead of searching raw documents every time you ask a question, this project has an LLM **compile and maintain a structured wiki** as new sources arrive. An autonomous agent layer routes intent, selects tools, and can update the wiki automatically. Knowledge accumulates; contradictions are flagged; syntheses are reusable.
 
-| RAG | LLM Wiki |
-|-----|----------|
+| Classic RAG | mini-wiki |
+|-------------|-----------|
 | Retrieve raw chunks at query time | Build a maintained wiki once, query from it |
 | Answers from raw sources each time | Answers from structured, interlinked pages |
 | No accumulation | Knowledge compounds over time |
+| Single-pass response | Multi-step agentic reasoning |
+
+---
+
+## Features
+
+- **RAG retrieval** — FAISS semantic search over your wiki pages (sentence-transformers embeddings)
+- **Agent intent routing** — `core/agent.py` classifies each query (`search`, `synthesize`, `update`, `research`, `meta`) and selects the right tool automatically
+- **Short-term memory** — `core/memory.py` keeps the last 5–10 conversation turns for contextual follow-ups
+- **Automatic contradiction detection** — ingestion snapshots the old page, calls the LLM to compare versions, and flags any factual conflicts in the wiki page, `wiki/log.md`, and `wiki/contradictions.md`
+- **PinchTab web research** — `tools/browse.py` drives a local Chrome instance via PinchTab to search DuckDuckGo, fetch pages, and ingest live web content through `/research`
+- **Single-page dashboard UI** — `dashboard/index.html` — a self-contained HTML/CSS/JS app (no build step) with chat, file upload, web research, and a contradictions panel
+- **Wiki self-improvement** — if an answer requires synthesis, the agent can write a new page to `wiki/syntheses/` and update `wiki/index.md` automatically
+- **Local-first** — all data is plain markdown in git; no cloud dependency required
 
 ---
 
@@ -20,126 +34,127 @@ Instead of searching raw documents every time you ask a question (RAG), this pro
 
 ```
 mini-wiki/
-├── app.py                # FastAPI server (RAG backend)
+├── app.py                  # FastAPI server — all endpoints
 ├── core/
-│   ├── _settings.py      # Load config/settings.yml (cached)
-│   ├── retriever.py      # FAISS semantic retriever
-│   ├── generator.py      # LLM answer generator (OpenAI / Ollama)
-│   └── pipeline.py       # End-to-end RAG pipeline
+│   ├── _settings.py        # Load config/settings.yml (cached)
+│   ├── agent.py            # Autonomous agent orchestrator (intent → tool → answer)
+│   ├── memory.py           # Short-term conversation memory (last N turns)
+│   ├── retriever.py        # FAISS semantic retriever
+│   ├── generator.py        # LLM answer generator (OpenAI / Ollama)
+│   └── pipeline.py         # End-to-end RAG pipeline + contradiction extraction
+├── dashboard/
+│   └── index.html          # Self-contained single-page web UI
 ├── raw/
-│   ├── sources/          # Immutable source documents (articles, notes, transcripts)
-│   └── assets/           # Images, PDFs, attachments
+│   ├── sources/            # Immutable source documents (articles, notes, transcripts)
+│   │   └── web/            # Auto-created web research downloads
+│   └── assets/             # Images, PDFs, attachments
 ├── wiki/
-│   ├── index.md          # Master catalog of all wiki pages
-│   ├── log.md            # Append-only operation history
-│   ├── entities/         # Pages for people, projects, companies, books
-│   ├── concepts/         # Pages for ideas, themes, topics
-│   ├── sources/          # One summary page per source
-│   └── syntheses/        # Comparisons, analyses, overviews
+│   ├── index.md            # Master catalog of all wiki pages
+│   ├── log.md              # Append-only operation history
+│   ├── contradictions.md   # Auto-detected factual contradictions
+│   ├── entities/           # Pages for people, projects, companies, books
+│   ├── concepts/           # Pages for ideas, themes, topics
+│   ├── sources/            # One summary page per source
+│   └── syntheses/          # Comparisons, analyses, overviews
 ├── schema/
-│   └── AGENTS.md         # LLM operating instructions
+│   └── AGENTS.md           # LLM operating instructions
 ├── tools/
-│   ├── ingest.py         # Ingest a source into the wiki (also builds RAG index)
-│   ├── query.py          # Search and query wiki pages
-│   └── lint.py           # Check for orphans, stale links, duplicates
+│   ├── ingest.py           # Ingest a source → wiki pages + RAG index + contradiction check
+│   ├── query.py            # Full-text search over wiki pages
+│   ├── lint.py             # Check for orphans, stale links, duplicates
+│   ├── browse.py           # PinchTab BrowserClient (search + fetch_page + research)
+│   └── web_ingest.py       # web_ingest() — research query → save files → ingest pipeline
 ├── config/
-│   └── settings.yml      # Project configuration
+│   └── settings.yml        # All project configuration
 ├── requirements.txt
 └── .gitignore
 ```
 
 ---
 
-## Quick Start
+## Setup
 
-### 1. Install dependencies
+### 1. Prerequisites
+
+- Python 3.10+
+- An OpenAI API key **or** a locally-running [Ollama](https://ollama.com/) instance
+- *(Optional)* [PinchTab](https://pinchtab.com/) running on `localhost:9867` for live web research
+
+### 2. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Configure your LLM API key
+### 3. Configure settings
 
-```bash
-cp config/settings.yml config/settings.local.yml
-# Edit config/settings.local.yml and add your API key
+All tuneable options live in `config/settings.yml`:
+
+```yaml
+llm:
+  provider: openai          # "openai" | "ollama"
+  model: gpt-4o
+  ollama_base_url: http://localhost:11434
+
+embedding:
+  model: all-MiniLM-L6-v2   # local sentence-transformers model
+
+retrieval:
+  top_k: 5
+  vectorstore_dir: vectorstore
+
+browser:
+  pinchtab_url: http://localhost:9867
+  max_sources_per_research: 3
+  enabled: true              # set false to disable web research
 ```
 
-Or set it via environment variable:
+Set your LLM credentials via environment variable (no changes to the file needed):
 
 ```bash
 export OPENAI_API_KEY=sk-...
-# or
-export ANTHROPIC_API_KEY=sk-ant-...
+# For Ollama, no key is needed — just run `ollama serve`
 ```
 
-### 3. Add a source
+### 4. Build the vector store
 
-Drop a markdown or text file into `raw/sources/`, then run:
+Before querying, build the FAISS index from your wiki pages:
 
 ```bash
-python tools/ingest.py raw/sources/my-article.md
+python tools/ingest.py --embed
 ```
-
-The tool will:
-- Create a summary page in `wiki/sources/`
-- Update relevant entity and concept pages
-- Update `wiki/index.md`
-- Append an entry to `wiki/log.md`
-
-### 4. Query the wiki
-
-```bash
-python tools/query.py "what is retrieval augmented generation?"
-```
-
-Searches wiki pages by full-text and returns ranked results with snippets.
-
-### 5. Lint the wiki
-
-```bash
-python tools/lint.py
-```
-
-Reports:
-- Orphan pages (no inbound links)
-- Broken `[[wiki links]]`
-- Duplicate pages (similar titles)
-- Empty pages
 
 ---
 
-## FastAPI + RAG Backend
-
-Mini-wiki includes a local-first AI assistant API built with FastAPI and semantic search over your wiki.
-
-### Start the server
+## Running the Server
 
 ```bash
 uvicorn app:app --reload --host 0.0.0.0 --port 8000
 ```
 
-The interactive API docs are available at <http://localhost:8000/docs>.
+| URL | Description |
+|-----|-------------|
+| <http://localhost:8000/> | Single-page dashboard UI |
+| <http://localhost:8000/docs> | Interactive Swagger API docs |
 
-### API Endpoints
+---
 
-| Method | Path       | Description                                      |
-|--------|------------|--------------------------------------------------|
-| GET    | `/health`  | Service status and vector store readiness        |
-| POST   | `/ingest`  | Build (or rebuild) the FAISS vector store        |
-| POST   | `/ask`     | Ask a question; returns grounded answer + sources |
+## API Endpoints
 
-### Typical workflow
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Service status and vector store readiness |
+| `POST` | `/ingest` | Rebuild the FAISS vector store from `wiki/` |
+| `POST` | `/ingest/file` | Upload and ingest a `.md`, `.txt`, or `.pdf` file |
+| `POST` | `/ask` | Ask a question — agent-routed, grounded answer |
+| `POST` | `/research` | Live web research via PinchTab + auto-ingest |
+| `GET` | `/contradictions` | List all detected contradictions |
 
-**Step 1 — build the vector store** (required before first `/ask`):
+---
 
-```bash
-curl -X POST http://localhost:8000/ingest
-```
+## Example Usage
 
-Or via the `/ingest` endpoint in the Swagger UI.
-
-**Step 2 — ask a question**:
+### Ask a question
 
 ```bash
 curl -X POST http://localhost:8000/ask \
@@ -147,83 +162,106 @@ curl -X POST http://localhost:8000/ask \
   -d '{"query": "What is retrieval augmented generation?"}'
 ```
 
-Example response:
-
 ```json
 {
-  "answer": "Retrieval Augmented Generation (RAG) is a technique that ...",
+  "answer": "Retrieval Augmented Generation (RAG) combines a semantic retriever ...",
+  "intent": "search",
+  "actions_taken": ["retrieve"],
   "sources": ["wiki/concepts/retrieval-augmented-generation.md"],
-  "context": ["RAG combines a retriever that searches a knowledge base ..."]
+  "confidence": "high",
+  "context": ["RAG combines a retriever that searches a knowledge base ..."],
+  "contradictions": [],
+  "web_sources_ingested": 0
 }
 ```
 
-**Step 3 — check service health**:
+### Rebuild the vector store
+
+```bash
+curl -X POST http://localhost:8000/ingest
+```
+
+### Upload a file for ingestion
+
+```bash
+curl -X POST http://localhost:8000/ingest/file \
+  -F "file=@raw/sources/my-article.md"
+```
+
+### Research a topic from the web
+
+Requires PinchTab running on port 9867:
+
+```bash
+curl -X POST http://localhost:8000/research \
+  -H "Content-Type: application/json" \
+  -d '{"query": "latest advances in vector databases", "max_sources": 3}'
+```
+
+```json
+{
+  "query": "latest advances in vector databases",
+  "sources_ingested": 3,
+  "files_created": ["web_latest-advances_0_1714000000.md", "..."],
+  "contradictions_found": 0
+}
+```
+
+### List detected contradictions
+
+```bash
+curl http://localhost:8000/contradictions
+```
+
+```json
+{
+  "contradictions": [
+    {
+      "page": "wiki/concepts/rag.md",
+      "claim_a": "RAG requires an external vector store.",
+      "claim_b": "RAG can operate with BM25 alone.",
+      "sources": "source-v1.md vs source-v2.md",
+      "detected": "2026-04-22 10:00:00"
+    }
+  ]
+}
+```
+
+### Check service health
 
 ```bash
 curl http://localhost:8000/health
 ```
 
-### LLM configuration
+---
 
-Edit `config/settings.yml` to switch between providers:
+## Dashboard UI
 
-```yaml
-llm:
-  provider: openai      # "openai" | "ollama"
-  model: gpt-4o         # OpenAI model, or Ollama model name (e.g. "llama3")
-  ollama_base_url: http://localhost:11434
-```
+Open <http://localhost:8000/> in your browser after starting the server.
 
-- **OpenAI**: set the `OPENAI_API_KEY` environment variable.
-- **Ollama**: run `ollama serve` locally; no API key required.
+The single-page dashboard (`dashboard/index.html`) provides:
 
-### Rebuild the index after wiki changes
+- **Header bar** — app name, live status dot (green = index ready), and a "Rebuild Index" button
+- **Chat panel** — conversation history with markdown rendering, source tags, contradiction warnings, and a web-research badge when live sources were used
+- **Upload panel** — drag-and-drop `.md` / `.txt` / `.pdf` ingestion, plus an internet research input that calls `/research`
+- **Contradictions panel** — scrollable list of all auto-detected factual conflicts, refreshed from `/contradictions`
 
-Whenever you add or update wiki pages, rebuild the index:
+No build step, no npm, no frameworks — pure HTML/CSS/JS with marked.js from CDN.
+
+---
+
+## CLI Tools
 
 ```bash
-# Via CLI
-python tools/ingest.py --embed
+# Ingest a source file and rebuild the RAG index
+python tools/ingest.py raw/sources/my-article.md
 
-# Via API
-curl -X POST http://localhost:8000/ingest
+# Full-text search over wiki pages
+python tools/query.py "what is retrieval augmented generation?"
+
+# Lint the wiki for orphans, broken links, and stale pages
+python tools/lint.py
 ```
-
----
-
-## Workflows
-
-### Ingest a source
-
-1. Add a source file to `raw/sources/`
-2. Run `python tools/ingest.py <path>`  
-   — or — open the repo in Claude/Copilot/Codex and ask it to ingest the file using `schema/AGENTS.md` as its instructions
-
-### Ask a question
-
-Use `python tools/query.py "your question"` for full-text search.  
-For deeper synthesis, open the wiki in your LLM and ask — the LLM reads `wiki/index.md` first, drills into relevant pages, and synthesizes an answer. Optionally save the answer as a new synthesis page.
-
-### Maintain the wiki
-
-Run `python tools/lint.py` periodically to find orphans, broken links, and stale pages.  
-Then open the wiki in your LLM and ask it to fix the reported issues.
-
----
-
-## Using with Obsidian
-
-This repo is designed to work perfectly with [Obsidian](https://obsidian.md/):
-
-1. Open the repo folder as an Obsidian vault
-2. The `wiki/` folder contains all linked pages
-3. Use Obsidian's **Graph View** to visualize the knowledge graph
-4. Use **Obsidian Web Clipper** to quickly add web articles as raw sources
-5. Use the **Dataview** plugin to query page frontmatter
-
-**Recommended Obsidian settings:**
-- Set "Attachment folder path" → `raw/assets/`
-- Enable "Use `[[Wikilinks]]`" for cross-references
 
 ---
 
@@ -240,7 +278,43 @@ When starting a new chat session with your agent (Claude, Codex, etc.), simply s
 
 > "Read schema/AGENTS.md, then ingest raw/sources/my-file.md"
 
-The LLM will follow the schema to maintain a consistent, well-linked wiki.
+---
+
+## Using with Obsidian
+
+1. Open the repo folder as an Obsidian vault
+2. The `wiki/` folder contains all linked pages
+3. Use Obsidian's **Graph View** to visualize the knowledge graph
+4. Use **Obsidian Web Clipper** to quickly add web articles as raw sources
+5. Use the **Dataview** plugin to query page frontmatter
+
+**Recommended Obsidian settings:**
+- Set "Attachment folder path" → `raw/assets/`
+- Enable "Use `[[Wikilinks]]`" for cross-references
+
+---
+
+## Contributing
+
+Contributions are welcome! Please follow these conventions:
+
+- **Code style** — follow PEP 8; use type annotations throughout
+- **Docstrings** — add a Google-style docstring to every new function and class
+- **Modularity** — keep new features in their own module; update `app.py` only to wire in a new endpoint
+- **Tests** — add or update tests when modifying `core/` or `tools/` logic
+- **No new dependencies** unless strictly necessary; prefer the stdlib or packages already in `requirements.txt`
+- **Markdown** — follow the page templates in `schema/AGENTS.md` when creating wiki content
+
+To contribute:
+
+```bash
+# Fork the repo, then:
+git checkout -b feature/my-improvement
+# Make your changes
+git commit -m "feat: describe your change"
+git push origin feature/my-improvement
+# Open a pull request
+```
 
 ---
 
@@ -252,13 +326,10 @@ The LLM will follow the schema to maintain a consistent, well-linked wiki.
 - **Local-first** — everything is plain markdown in git; no database, no cloud dependency
 - **Progressive complexity** — start simple, extend as needed
 
-Inspired by Vannevar Bush's *Memex* (1945) — a personal, curated knowledge store with associative trails. The part he couldn't solve was who does the maintenance. The LLM handles that.
+Inspired by Vannevar Bush's *Memex* (1945) — a personal, curated knowledge store with associative trails.
 
 ---
 
-## Extending
+## License
 
-- Set up an **MCP server** to expose tools to your agent
-- Add **automatic contradiction detection** with LLM calls
-- Add **Dataview frontmatter** for dynamic Obsidian tables
-- Add a **web frontend** to interact with the `/ask` API from a browser
+This project is released under the [MIT License](LICENSE).
