@@ -3,10 +3,13 @@ app.py — FastAPI server for mini-wiki RAG backend.
 
 Endpoints
 ---------
-GET  /health    — liveness / status check
-POST /ingest    — build (or rebuild) the FAISS vector store from wiki/ markdown
-POST /ask       — accept a natural-language query and return a grounded answer
-POST /research  — fetch live web sources via PinchTab and ingest them
+GET  /              — serve the single-page web dashboard
+GET  /health        — liveness / status check
+POST /ingest        — build (or rebuild) the FAISS vector store from wiki/ markdown
+POST /ingest/file   — ingest an uploaded .md / .txt / .pdf file
+POST /ask           — accept a natural-language query and return a grounded answer
+POST /research      — fetch live web sources via PinchTab and ingest them
+GET  /contradictions — return all parsed contradiction entries from wiki/contradictions.md
 
 Start the server
 ----------------
@@ -22,11 +25,13 @@ LLM credentials are read from environment variables:
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 # ---------------------------------------------------------------------------
@@ -93,6 +98,22 @@ class ResearchResponse(BaseModel):
     sources_ingested: int
     files_created: list[str]
     contradictions_found: int
+
+
+class ContradictionEntry(BaseModel):
+    """A single parsed contradiction entry from wiki/contradictions.md."""
+
+    page: str
+    claim_a: str
+    claim_b: str
+    sources: str
+    detected: str
+
+
+class ContradictionsResponse(BaseModel):
+    """Response from GET /contradictions."""
+
+    contradictions: list[ContradictionEntry]
 
 
 # ---------------------------------------------------------------------------
@@ -264,3 +285,143 @@ def research(request: ResearchRequest) -> ResearchResponse:
         files_created=summary["files_created"],
         contradictions_found=summary["contradictions_found"],
     )
+
+
+@app.get("/contradictions", response_model=ContradictionsResponse, summary="List detected contradictions")
+def get_contradictions() -> ContradictionsResponse:
+    """Parse ``wiki/contradictions.md`` and return all contradiction entries.
+
+    Each entry in the file is expected to be a Markdown section starting with
+    ``## <timestamp> — <page>``, followed by ``Claim A:``, ``Claim B:``,
+    ``Sources:``, and a ``---`` separator.
+
+    Returns
+    -------
+    JSON object with a ``contradictions`` list.  Returns an empty list when the
+    file does not exist or contains no parseable entries.
+    """
+    contradictions_file = REPO_ROOT / "wiki" / "contradictions.md"
+
+    if not contradictions_file.exists():
+        return ContradictionsResponse(contradictions=[])
+
+    text = contradictions_file.read_text(encoding="utf-8")
+    entries: list[ContradictionEntry] = []
+
+    # Each section starts with "## <timestamp> — <page>"
+    section_pattern = re.compile(
+        r"^## (?P<detected>[^\n]+?) — (?P<page>[^\n]+)\n"
+        r"(?:.*?Claim A:\s*(?P<claim_a>[^\n]+)\n)?"
+        r"(?:.*?Claim B:\s*(?P<claim_b>[^\n]+)\n)?"
+        r"(?:.*?Sources:\s*(?P<sources>[^\n]+))?",
+        re.MULTILINE | re.DOTALL,
+    )
+
+    for block in re.split(r"\n---\n", text):
+        block = block.strip()
+        if not block:
+            continue
+        m = section_pattern.search(block)
+        if not m:
+            continue
+        entries.append(
+            ContradictionEntry(
+                page=m.group("page").strip() if m.group("page") else "",
+                claim_a=m.group("claim_a").strip() if m.group("claim_a") else "",
+                claim_b=m.group("claim_b").strip() if m.group("claim_b") else "",
+                sources=m.group("sources").strip() if m.group("sources") else "",
+                detected=m.group("detected").strip() if m.group("detected") else "",
+            )
+        )
+
+    return ContradictionsResponse(contradictions=entries)
+
+
+@app.post("/ingest/file", response_model=IngestResponse, summary="Ingest an uploaded file")
+async def ingest_file(file: UploadFile = File(...)) -> IngestResponse:
+    """Accept an uploaded ``.md``, ``.txt``, or ``.pdf`` file, save it under
+    ``raw/sources/``, and rebuild the vector store.
+
+    Parameters
+    ----------
+    file
+        The multipart file upload.  Only ``.md``, ``.txt``, and ``.pdf``
+        extensions are accepted.
+
+    Returns
+    -------
+    IngestResponse with status and a brief result message.
+
+    Raises
+    ------
+    HTTP 400
+        When the uploaded file type is not supported.
+    HTTP 500
+        When the ingest pipeline exits with a non-zero return code.
+    """
+    allowed = {".md", ".txt", ".pdf"}
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{suffix}'. Allowed: {', '.join(sorted(allowed))}",
+        )
+
+    # Sanitize: keep only the base name (no path separators) to prevent traversal
+    safe_name = Path(file.filename or "upload").name
+    # Strip any remaining directory components and replace non-safe characters
+    safe_name = re.sub(r"[^\w\s.\-]", "_", safe_name)
+
+    dest_dir = REPO_ROOT / "raw" / "sources"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = dest_dir / safe_name
+
+    # Enforce a 50 MB size limit to avoid memory exhaustion
+    max_bytes = 50 * 1024 * 1024
+    content = await file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail="Uploaded file exceeds the 50 MB limit.",
+        )
+    dest_path.write_bytes(content)
+
+    ingest_script = REPO_ROOT / "tools" / "ingest.py"
+    result = subprocess.run(
+        [sys.executable, str(ingest_script), "--embed"],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Ingest failed:\n{result.stderr or result.stdout}",
+        )
+
+    try:
+        from core import retriever
+        retriever.invalidate_cache()
+    except Exception:
+        pass
+
+    return IngestResponse(
+        status="ok",
+        message=result.stdout.strip() or f"File '{file.filename}' ingested successfully.",
+    )
+
+
+@app.get("/", include_in_schema=False)
+def dashboard() -> FileResponse:
+    """Serve the single-page web dashboard at the root URL.
+
+    Returns
+    -------
+    The ``dashboard/index.html`` file as an HTML response.
+    """
+    index_path = REPO_ROOT / "dashboard" / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=404, detail="Dashboard not found.")
+    return FileResponse(str(index_path), media_type="text/html")
+
