@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>mini-wiki</title>
+  <!-- marked.js CDN for markdown rendering -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    /* ── Reset & base ──────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; font-family: system-ui, -apple-system, sans-serif;
+                 background: #f8fafc; color: #1e293b; font-size: 15px; }
+
+    /* ── Layout ────────────────────────────────────────────────────────────── */
+    body { display: flex; flex-direction: column; }
+
+    /* ── Header ────────────────────────────────────────────────────────────── */
+    #header {
+      display: flex; align-items: center; gap: 14px;
+      padding: 0 20px; height: 54px; background: #fff;
+      border-bottom: 1px solid #e2e8f0; flex-shrink: 0;
+    }
+    #app-name { font-size: 1.2rem; font-weight: 700; color: #2563eb; letter-spacing: -0.3px; }
+    #status { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; color: #64748b; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+    .dot-green { background: #22c55e; }
+    .dot-red   { background: #ef4444; }
+    #rebuild-btn {
+      margin-left: auto;
+      padding: 6px 14px; border-radius: 6px; border: 1px solid #2563eb;
+      background: #fff; color: #2563eb; font-size: 0.85rem; font-weight: 600;
+      cursor: pointer; transition: background 0.15s, color 0.15s;
+    }
+    #rebuild-btn:hover { background: #2563eb; color: #fff; }
+    #rebuild-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* ── Main area ─────────────────────────────────────────────────────────── */
+    #main {
+      display: flex; flex: 1; overflow: hidden; gap: 0;
+    }
+
+    /* ── Chat panel ────────────────────────────────────────────────────────── */
+    #chat-panel {
+      display: flex; flex-direction: column;
+      width: 60%; border-right: 1px solid #e2e8f0;
+      background: #fff;
+    }
+    #chat-panel h2 {
+      padding: 12px 18px; font-size: 0.85rem; font-weight: 700; color: #94a3b8;
+      text-transform: uppercase; letter-spacing: 0.06em;
+      border-bottom: 1px solid #f1f5f9; flex-shrink: 0;
+    }
+    #messages {
+      flex: 1; overflow-y: auto; padding: 16px 18px;
+      display: flex; flex-direction: column; gap: 14px;
+    }
+
+    /* Message bubbles */
+    .msg { max-width: 88%; word-break: break-word; }
+    .msg-user { align-self: flex-end; }
+    .msg-user .bubble {
+      background: #2563eb; color: #fff; border-radius: 16px 16px 4px 16px;
+      padding: 10px 14px; font-size: 0.92rem; line-height: 1.45;
+    }
+    .msg-ai { align-self: flex-start; }
+    .msg-ai .bubble {
+      background: #f1f5f9; color: #1e293b; border-radius: 16px 16px 16px 4px;
+      padding: 10px 14px; font-size: 0.92rem; line-height: 1.6;
+    }
+    /* markdown inside AI bubble */
+    .msg-ai .bubble p  { margin-bottom: 6px; }
+    .msg-ai .bubble p:last-child { margin-bottom: 0; }
+    .msg-ai .bubble ul, .msg-ai .bubble ol { padding-left: 20px; margin-bottom: 6px; }
+    .msg-ai .bubble code { background: #e2e8f0; padding: 1px 5px; border-radius: 4px; font-size: 0.88em; }
+    .msg-ai .bubble pre  { background: #1e293b; color: #f8fafc; padding: 10px; border-radius: 8px;
+                           overflow-x: auto; margin: 6px 0; }
+    .msg-ai .bubble pre code { background: transparent; padding: 0; }
+    .msg-ai .bubble h1,.msg-ai .bubble h2,.msg-ai .bubble h3 { font-size: 1em; font-weight: 700; margin: 8px 0 4px; }
+
+    /* Sources */
+    .sources { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+    .source-tag {
+      font-size: 0.75rem; padding: 2px 8px; background: #e0e7ff; color: #3730a3;
+      border-radius: 99px; cursor: default; transition: background 0.12s;
+    }
+    .source-tag:hover { background: #c7d2fe; }
+
+    /* Contradiction warning */
+    .contradiction-box {
+      margin-top: 7px; padding: 8px 11px; background: #fef9c3;
+      border-left: 3px solid #eab308; border-radius: 0 6px 6px 0;
+      font-size: 0.8rem; color: #713f12; line-height: 1.5;
+    }
+
+    /* Web badge */
+    .web-badge {
+      display: inline-block; margin-top: 6px;
+      font-size: 0.75rem; padding: 2px 9px; background: #dcfce7; color: #166534;
+      border-radius: 99px;
+    }
+
+    /* Typing indicator */
+    #typing-indicator { display: none; align-self: flex-start; padding: 10px 14px;
+                        background: #f1f5f9; border-radius: 16px; }
+    #typing-indicator.visible { display: flex; gap: 4px; align-items: center; }
+    .dot-pulse { width: 7px; height: 7px; border-radius: 50%; background: #94a3b8;
+                 animation: pulse 1.2s infinite ease-in-out; }
+    .dot-pulse:nth-child(2) { animation-delay: 0.2s; }
+    .dot-pulse:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes pulse { 0%,80%,100% { transform: scale(0.7); opacity: 0.5; }
+                       40% { transform: scale(1); opacity: 1; } }
+
+    /* Chat input */
+    #chat-input-row {
+      display: flex; gap: 8px; padding: 12px 18px;
+      border-top: 1px solid #e2e8f0; flex-shrink: 0;
+    }
+    #chat-input {
+      flex: 1; padding: 9px 13px; border: 1px solid #e2e8f0; border-radius: 8px;
+      font-size: 0.92rem; outline: none; resize: none; font-family: inherit;
+      line-height: 1.4; max-height: 100px; overflow-y: auto;
+    }
+    #chat-input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px #dbeafe; }
+    #send-btn {
+      padding: 9px 16px; background: #2563eb; color: #fff;
+      border: none; border-radius: 8px; font-size: 0.9rem; font-weight: 600;
+      cursor: pointer; transition: background 0.15s;
+    }
+    #send-btn:hover { background: #1d4ed8; }
+    #send-btn:disabled { background: #93c5fd; cursor: not-allowed; }
+
+    /* ── Right column ──────────────────────────────────────────────────────── */
+    #right-col {
+      display: flex; flex-direction: column;
+      width: 40%; background: #f8fafc; overflow: hidden;
+    }
+
+    /* ── Upload panel ──────────────────────────────────────────────────────── */
+    #upload-panel {
+      padding: 16px; border-bottom: 1px solid #e2e8f0;
+      background: #fff;
+    }
+    #upload-panel h2 {
+      font-size: 0.85rem; font-weight: 700; color: #94a3b8;
+      text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px;
+    }
+    #dropzone {
+      border: 2px dashed #cbd5e1; border-radius: 10px;
+      padding: 26px 16px; text-align: center; color: #94a3b8; font-size: 0.88rem;
+      cursor: pointer; transition: border-color 0.15s, background 0.15s;
+    }
+    #dropzone.over { border-color: #2563eb; background: #eff6ff; color: #2563eb; }
+    #dropzone input[type=file] { display: none; }
+    #upload-status { margin-top: 9px; font-size: 0.82rem; color: #64748b; min-height: 18px; }
+    #upload-status.ok  { color: #16a34a; }
+    #upload-status.err { color: #dc2626; }
+
+    /* Research input */
+    #research-row { display: flex; gap: 8px; margin-top: 12px; }
+    #research-input {
+      flex: 1; padding: 8px 11px; border: 1px solid #e2e8f0; border-radius: 8px;
+      font-size: 0.88rem; outline: none; font-family: inherit;
+    }
+    #research-input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px #dbeafe; }
+    #research-btn {
+      padding: 8px 14px; background: #2563eb; color: #fff; border: none;
+      border-radius: 8px; font-size: 0.88rem; font-weight: 600; cursor: pointer;
+      transition: background 0.15s;
+    }
+    #research-btn:hover { background: #1d4ed8; }
+    #research-btn:disabled { background: #93c5fd; cursor: not-allowed; }
+    #research-status { margin-top: 7px; font-size: 0.82rem; color: #64748b; min-height: 16px; }
+
+    /* ── Contradictions panel ──────────────────────────────────────────────── */
+    #contradictions-panel {
+      flex: 1; display: flex; flex-direction: column;
+      padding: 16px; overflow: hidden;
+    }
+    #contradictions-panel h2 {
+      font-size: 0.85rem; font-weight: 700; color: #94a3b8;
+      text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px;
+      flex-shrink: 0;
+    }
+    #contradictions-list {
+      flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px;
+    }
+    .contradiction-card {
+      background: #fff; border: 1px solid #fef08a; border-radius: 8px;
+      padding: 10px 12px; font-size: 0.82rem; line-height: 1.55;
+    }
+    .contradiction-card .c-page {
+      font-weight: 700; color: #2563eb; margin-bottom: 4px; font-size: 0.83rem;
+    }
+    .contradiction-card .c-claim { color: #374151; }
+    .contradiction-card .c-label {
+      font-weight: 600; color: #92400e; font-size: 0.78rem;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .contradiction-card .c-ts { color: #9ca3af; font-size: 0.75rem; margin-top: 4px; }
+    #empty-state { color: #94a3b8; font-size: 0.88rem; text-align: center; padding: 24px 0; }
+
+    /* ── Responsive ────────────────────────────────────────────────────────── */
+    @media (max-width: 700px) {
+      #main { flex-direction: column; overflow-y: auto; }
+      #chat-panel, #right-col { width: 100%; }
+      #chat-panel { height: 60vh; border-right: none; border-bottom: 1px solid #e2e8f0; }
+      #right-col { height: auto; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── HEADER ──────────────────────────────────────────────────────────────── -->
+<header id="header">
+  <span id="app-name">mini-wiki</span>
+  <div id="status">
+    <span class="dot dot-red" id="status-dot"></span>
+    <span id="status-text">Checking…</span>
+  </div>
+  <button id="rebuild-btn" title="Rebuild the FAISS vector store from wiki files">Rebuild Index</button>
+</header>
+
+<!-- ── MAIN ────────────────────────────────────────────────────────────────── -->
+<div id="main">
+
+  <!-- ── CHAT PANEL ─────────────────────────────────────────────────────────── -->
+  <section id="chat-panel" aria-label="Chat">
+    <h2>Chat</h2>
+    <div id="messages" role="log" aria-live="polite">
+      <!-- Messages injected here -->
+    </div>
+    <div id="typing-indicator" aria-label="AI is thinking">
+      <span class="dot-pulse"></span>
+      <span class="dot-pulse"></span>
+      <span class="dot-pulse"></span>
+    </div>
+    <div id="chat-input-row">
+      <textarea
+        id="chat-input"
+        placeholder="Ask a question…"
+        rows="1"
+        aria-label="Your question"
+      ></textarea>
+      <button id="send-btn">Send</button>
+    </div>
+  </section>
+
+  <!-- ── RIGHT COLUMN ───────────────────────────────────────────────────────── -->
+  <div id="right-col">
+
+    <!-- ── UPLOAD PANEL ───────────────────────────────────────────────────── -->
+    <section id="upload-panel" aria-label="Upload documents">
+      <h2>Upload Documents</h2>
+      <div id="dropzone" role="button" tabindex="0" aria-label="Drop files or click to upload">
+        <input type="file" id="file-input" accept=".md,.txt,.pdf" />
+        <div><span aria-hidden="true">📂</span> Drop <strong>.md / .txt / .pdf</strong> here</div>
+        <div style="font-size:0.78rem;margin-top:4px;">or click to browse</div>
+      </div>
+      <div id="upload-status" aria-live="polite"></div>
+
+      <label style="display:block;margin-top:14px;font-size:0.82rem;color:#64748b;font-weight:600;">
+        Or research from internet:
+      </label>
+      <div id="research-row">
+        <input type="text" id="research-input" placeholder="Search topic…" />
+        <button id="research-btn">Search</button>
+      </div>
+      <div id="research-status" aria-live="polite"></div>
+    </section>
+
+    <!-- ── CONTRADICTIONS PANEL ───────────────────────────────────────────── -->
+    <section id="contradictions-panel" aria-label="Contradictions">
+      <h2><span aria-hidden="true">⚠️</span> Contradictions</h2>
+      <div id="contradictions-list">
+        <div id="empty-state">No contradictions detected yet.</div>
+      </div>
+    </section>
+
+  </div><!-- #right-col -->
+</div><!-- #main -->
+
+<script>
+/* ============================================================================
+   mini-wiki dashboard — vanilla JS, no framework
+   ============================================================================ */
+
+'use strict';
+
+// --------------------------------------------------------------------------
+// Utilities
+// --------------------------------------------------------------------------
+
+/** Escape HTML special characters in a string. */
+function escHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** Scroll an element to its bottom. */
+function scrollBottom(el) {
+  el.scrollTop = el.scrollHeight;
+}
+
+// --------------------------------------------------------------------------
+// Health check
+// --------------------------------------------------------------------------
+
+/**
+ * Poll GET /health and update the header status indicator.
+ * Runs once on load, then every 30 s.
+ */
+async function checkHealth() {
+  try {
+    const res = await fetch('/health');
+    if (!res.ok) throw new Error('non-ok');
+    const data = await res.json();
+    const dot  = document.getElementById('status-dot');
+    const text = document.getElementById('status-text');
+    if (data.vectorstore_ready) {
+      dot.className  = 'dot dot-green';
+      text.textContent = 'Online';
+    } else {
+      dot.className  = 'dot dot-red';
+      text.textContent = 'Index not ready';
+    }
+  } catch {
+    const dot  = document.getElementById('status-dot');
+    const text = document.getElementById('status-text');
+    dot.className  = 'dot dot-red';
+    text.textContent = 'Offline';
+  }
+}
+
+checkHealth();
+setInterval(checkHealth, 30_000);
+
+// --------------------------------------------------------------------------
+// Rebuild index
+// --------------------------------------------------------------------------
+
+document.getElementById('rebuild-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('rebuild-btn');
+  btn.disabled = true;
+  btn.textContent = 'Rebuilding…';
+  try {
+    const res = await fetch('/ingest', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Ingest failed');
+    btn.textContent = '✓ Done';
+    await checkHealth();
+    setTimeout(() => { btn.textContent = 'Rebuild Index'; btn.disabled = false; }, 2500);
+  } catch (err) {
+    btn.textContent = '✗ Error';
+    setTimeout(() => { btn.textContent = 'Rebuild Index'; btn.disabled = false; }, 2500);
+  }
+});
+
+// --------------------------------------------------------------------------
+// Chat
+// --------------------------------------------------------------------------
+
+const messagesEl = document.getElementById('messages');
+const inputEl    = document.getElementById('chat-input');
+const sendBtnEl  = document.getElementById('send-btn');
+const typingEl   = document.getElementById('typing-indicator');
+
+/** Append a message bubble to the chat history.
+ *
+ * @param {'user'|'ai'} role
+ * @param {string}      html  — already-sanitised HTML to place inside the bubble
+ * @param {Object}      [meta]  — optional extra data (sources, contradictions, web_count)
+ */
+function appendMessage(role, html, meta) {
+  const wrap   = document.createElement('div');
+  wrap.className = `msg msg-${role}`;
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.innerHTML = html;
+  wrap.appendChild(bubble);
+
+  if (meta) {
+    // Sources
+    if (meta.sources && meta.sources.length > 0) {
+      const sourceRow = document.createElement('div');
+      sourceRow.className = 'sources';
+      meta.sources.forEach(src => {
+        const tag = document.createElement('span');
+        tag.className = 'source-tag';
+        tag.title = src;
+        tag.textContent = src.replace(/^.*[/\\]/, '').replace(/\.md$/, '');
+        sourceRow.appendChild(tag);
+      });
+      wrap.appendChild(sourceRow);
+    }
+
+    // Contradictions
+    if (meta.contradictions && meta.contradictions.length > 0) {
+      const box = document.createElement('div');
+      box.className = 'contradiction-box';
+      box.innerHTML = '<strong>⚠️ Contradictions detected:</strong><br>' +
+        meta.contradictions.map(c => escHtml(c)).join('<br>');
+      wrap.appendChild(box);
+    }
+
+    // Web sources badge
+    if (meta.web_sources_ingested > 0) {
+      const badge = document.createElement('span');
+      badge.className = 'web-badge';
+      badge.setAttribute('aria-label', `Researched ${meta.web_sources_ingested} web source${meta.web_sources_ingested > 1 ? 's' : ''}`);
+      badge.textContent = `🌐 researched ${meta.web_sources_ingested} web source${meta.web_sources_ingested > 1 ? 's' : ''}`;
+      wrap.appendChild(badge);
+    }
+  }
+
+  messagesEl.appendChild(wrap);
+  scrollBottom(messagesEl);
+}
+
+/** Show / hide the typing indicator. */
+function setTyping(visible) {
+  typingEl.classList.toggle('visible', visible);
+  // Keep typing indicator at the bottom of the message list
+  if (visible) messagesEl.appendChild(typingEl);
+  scrollBottom(messagesEl);
+}
+
+/** Auto-grow the textarea as the user types. */
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 100) + 'px';
+});
+
+/** Send on Enter (without Shift). */
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+sendBtnEl.addEventListener('click', sendMessage);
+
+/** Post the user's query to POST /ask and render the response. */
+async function sendMessage() {
+  const query = inputEl.value.trim();
+  if (!query) return;
+
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+  sendBtnEl.disabled = true;
+
+  appendMessage('user', escHtml(query));
+  setTyping(true);
+
+  try {
+    const res = await fetch('/ask', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+
+    const data = await res.json();
+    setTyping(false);
+
+    if (!res.ok) {
+      appendMessage('ai', '<em>Error: ' + escHtml(data.detail || 'Unknown error') + '</em>');
+    } else {
+      // Render answer markdown
+      const answerHtml = marked.parse(data.answer || '');
+      appendMessage('ai', answerHtml, {
+        sources:               data.sources || [],
+        contradictions:        data.contradictions || [],
+        web_sources_ingested:  data.web_sources_ingested || 0,
+      });
+    }
+  } catch (err) {
+    setTyping(false);
+    appendMessage('ai', '<em>Network error — is the server running?</em>');
+  } finally {
+    sendBtnEl.disabled = false;
+    inputEl.focus();
+  }
+}
+
+// --------------------------------------------------------------------------
+// File upload (drag-and-drop + click)
+// --------------------------------------------------------------------------
+
+const dropzone  = document.getElementById('dropzone');
+const fileInput = document.getElementById('file-input');
+const uploadStatus = document.getElementById('upload-status');
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') fileInput.click(); });
+
+dropzone.addEventListener('dragover', e => {
+  e.preventDefault();
+  dropzone.classList.add('over');
+});
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('over'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropzone.classList.remove('over');
+  const file = e.dataTransfer.files[0];
+  if (file) uploadFile(file);
+});
+
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) uploadFile(fileInput.files[0]);
+  fileInput.value = '';
+});
+
+/**
+ * Upload a file to POST /ingest/file and show result.
+ * @param {File} file
+ */
+async function uploadFile(file) {
+  const allowed = ['.md', '.txt', '.pdf'];
+  const ext = '.' + file.name.split('.').pop().toLowerCase();
+  if (!allowed.includes(ext)) {
+    uploadStatus.className = 'err';
+    uploadStatus.textContent = `Unsupported file type "${ext}". Use .md, .txt, or .pdf.`;
+    return;
+  }
+
+  uploadStatus.className = '';
+  uploadStatus.textContent = `Uploading "${file.name}"…`;
+
+  const form = new FormData();
+  form.append('file', file);
+
+  try {
+    const res  = await fetch('/ingest/file', { method: 'POST', body: form });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Upload failed');
+    uploadStatus.className = 'ok';
+    uploadStatus.textContent = `✓ "${file.name}" ingested.`;
+    await checkHealth();
+  } catch (err) {
+    uploadStatus.className = 'err';
+    uploadStatus.textContent = '✗ ' + err.message;
+  }
+}
+
+// --------------------------------------------------------------------------
+// Web research
+// --------------------------------------------------------------------------
+
+const researchInput  = document.getElementById('research-input');
+const researchBtn    = document.getElementById('research-btn');
+const researchStatus = document.getElementById('research-status');
+
+researchInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') researchWeb();
+});
+researchBtn.addEventListener('click', researchWeb);
+
+/** Call POST /research and show a progress / result message. */
+async function researchWeb() {
+  const query = researchInput.value.trim();
+  if (!query) return;
+
+  researchBtn.disabled = true;
+  researchStatus.textContent = '🔎 Researching — this may take a moment…';
+  researchStatus.style.color = '#2563eb';
+
+  try {
+    const res  = await fetch('/research', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Research failed');
+    researchStatus.style.color = '#16a34a';
+    researchStatus.textContent =
+      `✓ Ingested ${data.sources_ingested} source${data.sources_ingested !== 1 ? 's' : ''} for "${query}".`;
+    await checkHealth();
+    loadContradictions();
+  } catch (err) {
+    researchStatus.style.color = '#dc2626';
+    researchStatus.textContent = '✗ ' + err.message;
+  } finally {
+    researchBtn.disabled = false;
+  }
+}
+
+// --------------------------------------------------------------------------
+// Contradictions panel
+// --------------------------------------------------------------------------
+
+const contradictionsList = document.getElementById('contradictions-list');
+const emptyState         = document.getElementById('empty-state');
+
+/**
+ * Fetch GET /contradictions and render the list.
+ * Called on page load and after any ingest / research action.
+ */
+async function loadContradictions() {
+  try {
+    const res  = await fetch('/contradictions');
+    if (!res.ok) return;
+    const data = await res.json();
+    renderContradictions(data.contradictions || []);
+  } catch {
+    /* silently ignore — contradictions panel is non-critical */
+  }
+}
+
+/**
+ * Render an array of contradiction entries into the panel.
+ * @param {Array<{page:string, claim_a:string, claim_b:string, sources:string, detected:string}>} items
+ */
+function renderContradictions(items) {
+  // Remove all existing cards (keep empty-state node around)
+  Array.from(contradictionsList.querySelectorAll('.contradiction-card')).forEach(c => c.remove());
+
+  if (!items || items.length === 0) {
+    emptyState.style.display = '';
+    return;
+  }
+
+  emptyState.style.display = 'none';
+
+  items.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'contradiction-card';
+    card.innerHTML =
+      `<div class="c-page">${escHtml(item.page)}</div>` +
+      `<div><span class="c-label">Claim A:</span> <span class="c-claim">${escHtml(item.claim_a)}</span></div>` +
+      `<div><span class="c-label">Claim B:</span> <span class="c-claim">${escHtml(item.claim_b)}</span></div>` +
+      (item.sources ? `<div style="font-size:0.76rem;color:#6b7280;margin-top:3px;">Sources: ${escHtml(item.sources)}</div>` : '') +
+      `<div class="c-ts">${escHtml(item.detected)}</div>`;
+    contradictionsList.appendChild(card);
+  });
+
+  scrollBottom(contradictionsList);
+}
+
+// Load on startup
+loadContradictions();
+</script>
+</body>
+</html>
