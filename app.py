@@ -3,9 +3,10 @@ app.py — FastAPI server for mini-wiki RAG backend.
 
 Endpoints
 ---------
-GET  /health   — liveness / status check
-POST /ingest   — build (or rebuild) the FAISS vector store from wiki/ markdown
-POST /ask      — accept a natural-language query and return a grounded answer
+GET  /health    — liveness / status check
+POST /ingest    — build (or rebuild) the FAISS vector store from wiki/ markdown
+POST /ask       — accept a natural-language query and return a grounded answer
+POST /research  — fetch live web sources via PinchTab and ingest them
 
 Start the server
 ----------------
@@ -61,6 +62,7 @@ class AskResponse(BaseModel):
     confidence: str
     context: list[str]
     contradictions: list[str] = []
+    web_sources_ingested: int = 0
 
 
 class IngestResponse(BaseModel):
@@ -75,6 +77,22 @@ class HealthResponse(BaseModel):
 
     status: str
     vectorstore_ready: bool
+
+
+class ResearchRequest(BaseModel):
+    """Input payload for POST /research."""
+
+    query: str
+    max_sources: int = 3
+
+
+class ResearchResponse(BaseModel):
+    """Response from POST /research."""
+
+    query: str
+    sources_ingested: int
+    files_created: list[str]
+    contradictions_found: int
 
 
 # ---------------------------------------------------------------------------
@@ -174,4 +192,75 @@ def ask(request: AskRequest) -> AskResponse:
         confidence=result["confidence"],
         context=result["context"],
         contradictions=result.get("contradictions", []),
+        web_sources_ingested=result.get("web_sources_ingested", 0),
+    )
+
+
+@app.post("/research", response_model=ResearchResponse, summary="Live web research")
+def research(request: ResearchRequest) -> ResearchResponse:
+    """Fetch live web sources for *query* and ingest them into the wiki.
+
+    Uses PinchTab browser automation to search DuckDuckGo, retrieve page text,
+    save each source under ``raw/sources/web/``, and run the existing ingest
+    pipeline on every file.
+
+    Request body
+    ------------
+    ``query``
+        The research topic or question.
+    ``max_sources``
+        Maximum number of web sources to ingest (default ``3``).
+
+    Returns
+    -------
+    JSON object with ``query``, ``sources_ingested``, ``files_created``, and
+    ``contradictions_found``.
+
+    Raises
+    ------
+    HTTP 503
+        When PinchTab is not reachable (connection refused or timeout).
+    """
+    from core._settings import get_settings
+
+    settings = get_settings()
+    browser_cfg = settings.get("browser", {})
+
+    if not browser_cfg.get("enabled", True):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Browser service is disabled in config/settings.yml. "
+                "Set browser.enabled to true to use web research."
+            ),
+        )
+
+    try:
+        from tools.web_ingest import web_ingest
+
+        summary = web_ingest(request.query, max_sources=request.max_sources)
+    except Exception as exc:
+        # Detect connection-level errors that indicate PinchTab is not running.
+        import requests as _requests
+
+        err_str = str(exc)
+        if isinstance(exc, (_requests.ConnectionError, _requests.Timeout)) or (
+            "connection" in err_str.lower()
+            or "refused" in err_str.lower()
+            or "timeout" in err_str.lower()
+        ):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Browser service unavailable. "
+                    "Make sure PinchTab is running on port 9867."
+                ),
+            ) from exc
+        raise HTTPException(status_code=500, detail=err_str) from exc
+
+    return ResearchResponse(
+        query=summary["query"],
+        sources_ingested=summary["sources_ingested"],
+        files_created=summary["files_created"],
+        contradictions_found=summary["contradictions_found"],
     )

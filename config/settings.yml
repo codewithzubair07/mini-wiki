@@ -34,3 +34,9 @@ ingest:
 retrieval:
   top_k: 5                  # number of chunks to retrieve per query
   vectorstore_dir: vectorstore  # directory where FAISS index is stored
+
+# Browser / PinchTab settings (web research via live browser automation)
+browser:
+  pinchtab_url: http://localhost:9867
+  max_sources_per_research: 3
+  enabled: true

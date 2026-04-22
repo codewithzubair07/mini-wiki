@@ -90,10 +90,22 @@ _SYNTHESIZE_KEYWORDS = frozenset(
         "analyse", "analyze", "relate", "connection", "versus", "vs",
     }
 )
+# Keyword tokens and multi-word phrases that signal live web research intent.
+_RESEARCH_KEYWORDS = frozenset(
+    {"research", "latest", "current", "recent", "today", "news"}
+)
+_RESEARCH_PHRASES = (
+    "find out",
+    "look up",
+    "search the internet",
+    "search the web",
+    "search online",
+    "look it up",
+)
 
 
 def classify_intent(query: str) -> str:
-    """Classify the user's *query* into one of five intent classes.
+    """Classify the user's *query* into one of six intent classes.
 
     Intent classes
     --------------
@@ -105,6 +117,8 @@ def classify_intent(query: str) -> str:
         Trigger an ingest / wiki rebuild.
     ``meta``
         System or configuration questions.
+    ``research``
+        Live web research via PinchTab browser automation.
     ``unknown``
         Catch-all fallback when no intent is detected.
 
@@ -120,7 +134,7 @@ def classify_intent(query: str) -> str:
     -------
     str
         One of ``"search"``, ``"synthesize"``, ``"update"``, ``"meta"``,
-        or ``"unknown"``.
+        ``"research"``, or ``"unknown"``.
     """
     q_lower = query.lower()
     words = set(q_lower.split())
@@ -132,6 +146,12 @@ def classify_intent(query: str) -> str:
     # Meta intent (system info questions)
     if _META_KEYWORDS & words:
         return "meta"
+
+    # Research intent — live web lookup requested
+    if _RESEARCH_KEYWORDS & words:
+        return "research"
+    if any(phrase in q_lower for phrase in _RESEARCH_PHRASES):
+        return "research"
 
     # Synthesize intent (comparison / analysis words present)
     if _SYNTHESIZE_KEYWORDS & words:
@@ -655,6 +675,40 @@ def run(query: str, history: list[dict[str, str]] | None = None) -> dict[str, An
                 write_wiki_page(page_content, page_filename)
                 actions_taken.append("update_wiki")
 
+    elif intent == "research":
+        # Thought: user wants live web information
+        # Action: web_ingest then retrieve
+        from core._settings import get_settings as _get_settings
+        _settings = _get_settings()
+        browser_enabled = _settings.get("browser", {}).get("enabled", True)
+        web_sources_ingested = 0
+
+        if browser_enabled:
+            actions_taken.append("web_research")
+            try:
+                from tools.web_ingest import web_ingest as _web_ingest
+                max_src = int(
+                    _settings.get("browser", {}).get("max_sources_per_research", 3)
+                )
+                web_result = _web_ingest(query, max_sources=max_src)
+                web_sources_ingested = web_result.get("sources_ingested", 0)
+                # After ingesting, invalidate retrieval cache so new pages are found
+                try:
+                    from core import retriever as _retriever
+                    _retriever.invalidate_cache()
+                except Exception:
+                    pass
+                if web_sources_ingested > 0:
+                    actions_taken.append("ingest")
+            except Exception:
+                # PinchTab unavailable or ingest failed — fall through to RAG
+                web_sources_ingested = 0
+
+        # Always follow up with a RAG retrieval so the answer is grounded
+        actions_taken.append("retrieve")
+        result = rag_pipeline(query, history=history)
+        result["web_sources_ingested"] = web_sources_ingested
+
     else:
         # search or unknown — route through the RAG pipeline
         # Thought: user wants to find information
@@ -679,4 +733,5 @@ def run(query: str, history: list[dict[str, str]] | None = None) -> dict[str, An
         "confidence": result.get("confidence", "low"),
         "context": result.get("context", []),
         "contradictions": result.get("contradictions", []),
+        "web_sources_ingested": result.get("web_sources_ingested", 0),
     }
