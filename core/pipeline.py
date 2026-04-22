@@ -9,10 +9,49 @@ Combines the retriever and generator into a single ``ask`` function that:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from core import generator, retriever
 from core._settings import get_settings
+
+# Regex that matches the opening line of a contradiction warning block so we
+# can identify and extract the block from retrieved page content.
+_CONTRADICTION_BLOCK_RE = re.compile(
+    r"---\s*\n⚠️ CONTRADICTION DETECTED\n(.*?)---",
+    re.DOTALL,
+)
+
+
+def extract_contradiction_warnings(chunks: list[str]) -> list[str]:
+    """Scan *chunks* for embedded ⚠️ CONTRADICTION DETECTED blocks.
+
+    When the ingestion pipeline detects a contradiction it prepends a warning
+    block to the affected wiki page.  Those pages are later chunked and
+    indexed, so the warning text may appear in retrieval results.  This
+    function extracts each such block and returns it as a formatted warning
+    string so callers can surface it to the user.
+
+    Parameters
+    ----------
+    chunks : list[str]
+        Raw text chunks returned by the retriever.
+
+    Returns
+    -------
+    list[str]
+        De-duplicated list of human-readable warning strings extracted from
+        the chunks.  Empty when no warnings are found.
+    """
+    seen: set[str] = set()
+    warnings: list[str] = []
+    for chunk in chunks:
+        for match in _CONTRADICTION_BLOCK_RE.finditer(chunk):
+            block_body = match.group(1).strip()
+            if block_body not in seen:
+                seen.add(block_body)
+                warnings.append("⚠️ CONTRADICTION DETECTED\n" + block_body)
+    return warnings
 
 
 def ask(query: str) -> dict[str, Any]:
@@ -26,9 +65,11 @@ def ask(query: str) -> dict[str, Any]:
     Returns
     -------
     dict with keys:
-        ``answer``   – LLM-generated answer (grounded in context).
-        ``sources``  – de-duplicated list of source file names.
-        ``context``  – list of raw text chunks used as context.
+        ``answer``         – LLM-generated answer (grounded in context).
+        ``sources``        – de-duplicated list of source file names.
+        ``context``        – list of raw text chunks used as context.
+        ``contradictions`` – list of contradiction warning strings extracted
+                             from the retrieved pages (empty when none found).
     """
     settings = get_settings()
     top_k: int = int(settings["retrieval"]["top_k"])
@@ -41,11 +82,15 @@ def ask(query: str) -> dict[str, Any]:
         dict.fromkeys(h["source"] for h in hits)  # preserve order, deduplicate
     )
 
-    # 2. Generate grounded answer
+    # 2. Extract any contradiction warnings embedded in the retrieved pages
+    contradictions: list[str] = extract_contradiction_warnings(chunks)
+
+    # 3. Generate grounded answer
     answer: str = generator.generate(query, chunks)
 
     return {
         "answer": answer,
         "sources": sources,
         "context": chunks,
+        "contradictions": contradictions,
     }
